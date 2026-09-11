@@ -68,6 +68,22 @@ class Probe:
 
             self.w.idle.next_major = time.monotonic() - 1
             self.w.tick()
+            negative_settings = self.w.profile['idle']['negative']
+            if negative_settings.get('persistent', True) is False:
+                assert self.w.idle_kind == 'idle_negative'
+                assert self.w.idle_until != float('inf')
+                assert self.w.annoyance_count == 0
+                expected = [item['asset'] for item in
+                            self.w.model_profile.expression_candidates('negative')]
+                assert self.w.idle_expression in expected
+                self.w.idle_until = time.monotonic() - 1
+                self.w.tick()
+                assert self.w.idle_kind is None and self.w.annoyance_count == 0
+                assert self.w.idle.next_major > time.monotonic()
+                self.checks.append(
+                    'profile transient idle negative expires and does not alter annoyance')
+                self.auto_sleep()
+                return
             assert self.w.idle_kind == 'negative'
             assert self.w.idle_until == float('inf')
             expression = self.w.idle_expression
@@ -109,13 +125,17 @@ class Probe:
                       round((1 - clip[1] / clip[3]) * self.w.canvas.height() / 2))
 
     def move_head(self, phase):
-        QTest.mouseMove(self.w.canvas, self.head_point(.65 * math.sin(phase)), delay=25)
+        point = self.head_point(.65 * math.sin(phase))
+        QTest.mouseMove(self.w.canvas, point, delay=25)
+        self.w.hover(point, Qt.MouseButton.NoButton)
         QTest.qWait(10)
 
     def negative_hover(self):
         try:
             before = self.w.reaction_count
-            QTest.mouseMove(self.w.canvas, self.head_point(0), delay=30)
+            point = self.head_point(0)
+            QTest.mouseMove(self.w.canvas, point, delay=30)
+            self.w.hover(point, Qt.MouseButton.NoButton)
             assert self.w.idle_kind == 'negative' and self.w.reaction_count == before
             self.checks.append('plain head hover keeps negative expression')
 
@@ -232,7 +252,7 @@ class Probe:
         self.done = True
         self.watchdog.stop()
         result = {'passed': passed, 'checks': self.checks,
-                  'input_method': 'QTest events and actual Live2D/OpenGL state',
+                  'input_method': 'QTest clicks plus deterministic production hover callback and actual Live2D/OpenGL state',
                   'major_paths': ['forced negative weight', 'forced sleep weight']}
         if error:
             result['error'] = error

@@ -134,7 +134,13 @@ class IdleScheduler:
             if action['kind'] == 'negative':
                 negative = self.settings['negative']
                 selected = self._choose(negative['expressions'])
-                return 'negative', {'expression': selected['asset']}
+                persistent = negative.get('persistent', True)
+                payload = {'expression': selected['asset']}
+                if not persistent:
+                    payload.update(
+                        persistent=False,
+                        hold=self._delay(negative['hold_seconds']))
+                return 'negative', payload
         if active_kind is not None:
             return None
         ambient = self.settings['ambient']

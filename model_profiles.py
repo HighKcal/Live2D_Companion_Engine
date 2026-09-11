@@ -98,9 +98,15 @@ class ModelProfile:
         head = self.hit_areas.get('head')
         if not isinstance(head, dict) or head.get('type') != 'rect':
             raise ProfileError(f'{self.path.name}.hit_areas.head must be a rect')
-        rect = head.get('rect')
-        if not isinstance(rect, list) or len(rect) != 4 or not all(isinstance(v, (int, float)) for v in rect):
-            raise ProfileError(f'{self.path.name}.hit_areas.head.rect must contain four numbers')
+        for name, area in self.hit_areas.items():
+            if not isinstance(area, dict) or area.get('type') != 'rect':
+                raise ProfileError(f'{self.path.name}.hit_areas.{name} must be a rect')
+            rect = area.get('rect')
+            if (not isinstance(rect, list) or len(rect) != 4 or
+                    not all(isinstance(v, (int, float)) for v in rect) or
+                    rect[0] >= rect[2] or rect[1] >= rect[3]):
+                raise ProfileError(
+                    f'{self.path.name}.hit_areas.{name}.rect must contain ordered left, bottom, right, top numbers')
         for key in ('scale', 'window_aspect', 'window_height_per_character_height'):
             if not isinstance(self.presentation.get(key), (int, float)):
                 raise ProfileError(f'{self.path.name}.presentation.{key} must be numeric')
@@ -120,39 +126,89 @@ class ModelProfile:
         idle = _require(self.behavior, 'idle', dict, f'{self.path.name}.behavior')
         _require(idle, 'ambient', dict, f'{self.path.name}.behavior.idle')
         major = _require(idle, 'major', dict, f'{self.path.name}.behavior.idle')
-        _require(idle, 'negative', dict, f'{self.path.name}.behavior.idle')
+        negative = _require(idle, 'negative', dict, f'{self.path.name}.behavior.idle')
         _require(major, 'actions', list, f'{self.path.name}.behavior.idle.major')
+        if 'persistent' in negative and not isinstance(negative['persistent'], bool):
+            raise ProfileError(f'{self.path.name}.behavior.idle.negative.persistent must be boolean')
+        if negative.get('persistent') is False:
+            hold = negative.get('hold_seconds')
+            if (not isinstance(hold, list) or len(hold) != 2 or
+                    not all(isinstance(v, (int, float)) and v > 0 for v in hold)):
+                raise ProfileError(
+                    f'{self.path.name}.behavior.idle.negative.hold_seconds needs two positive numbers')
         _require(self.behavior, 'petting', dict, f'{self.path.name}.behavior')
         poke = self.behavior.get('poke')
         if poke is not None:
             if not isinstance(poke, dict):
                 raise ProfileError(f'{self.path.name}.behavior.poke must be an object')
-            for key in ('reset_seconds', 'max_click_seconds', 'drag_threshold_pixels'):
+            for key in ('max_click_seconds', 'drag_threshold_pixels'):
                 if not isinstance(poke.get(key), (int, float)) or poke[key] <= 0:
                     raise ProfileError(f'{self.path.name}.behavior.poke.{key} must be positive')
-            reactions = _require(poke, 'reactions', list,
-                                 f'{self.path.name}.behavior.poke')
-            previous_threshold = 0
-            for reaction in reactions:
-                if not isinstance(reaction, dict):
-                    raise ProfileError(f'{self.path.name}.behavior.poke reaction must be an object')
-                threshold = reaction.get('threshold')
-                asset = reaction.get('asset')
-                if not isinstance(threshold, int) or threshold <= previous_threshold:
+            region = poke.get('interaction_region')
+            if not isinstance(region, str) or region not in self.hit_areas:
+                raise ProfileError(
+                    f'{self.path.name}.behavior.poke interaction_region must name a hit area')
+            levels = _require(poke, 'levels', list, f'{self.path.name}.behavior.poke')
+            if not levels:
+                raise ProfileError(f'{self.path.name}.behavior.poke.levels must not be empty')
+            for expected, level in enumerate(levels, 1):
+                if not isinstance(level, dict) or level.get('level') != expected:
                     raise ProfileError(
-                        f'{self.path.name}.behavior.poke thresholds must be increasing positive integers')
-                if asset not in self.expressions:
-                    raise ProfileError(f'{self.path.name}: unknown poke expression asset {asset}')
-                persistent = reaction.get('persistent_negative', False)
-                if not isinstance(persistent, bool):
+                        f'{self.path.name}.behavior.poke levels must be sequential from 1')
+                if level.get('asset') not in self.expressions:
+                    raise ProfileError(
+                        f'{self.path.name}: unknown poke expression asset {level.get("asset")}')
+                if not isinstance(level.get('persistent_negative', False), bool):
                     raise ProfileError(
                         f'{self.path.name}.behavior.poke persistent_negative must be boolean')
-                hold = reaction.get('hold_seconds')
-                if not persistent and (not isinstance(hold, list) or len(hold) != 2 or
-                                       not all(isinstance(v, (int, float)) and v > 0 for v in hold)):
+            reconciliation = poke.get('reconciliation', [])
+            if not isinstance(reconciliation, list):
+                raise ProfileError(
+                    f'{self.path.name}.behavior.poke.reconciliation must be a list')
+            for index, step in enumerate(reconciliation):
+                if not isinstance(step, dict):
                     raise ProfileError(
-                        f'{self.path.name}.behavior.poke transient hold_seconds needs two positive numbers')
-                previous_threshold = threshold
+                        f'{self.path.name}.behavior.poke reconciliation step must be an object')
+                if step.get('asset') not in self.expressions:
+                    raise ProfileError(
+                        f'{self.path.name}: unknown poke reconciliation asset {step.get("asset")}')
+                remaining = step.get('remaining_level')
+                if (not isinstance(remaining, int) or isinstance(remaining, bool) or
+                        not 0 <= remaining < len(levels)):
+                    raise ProfileError(
+                        f'{self.path.name}.behavior.poke reconciliation remaining_level '
+                        'must be an anger level below the maximum')
+                if index and remaining > reconciliation[index - 1]['remaining_level']:
+                    raise ProfileError(
+                        f'{self.path.name}.behavior.poke reconciliation remaining_level '
+                        'must not increase')
+                values = step.get('parameter_values', {})
+                if not isinstance(values, dict):
+                    raise ProfileError(
+                        f'{self.path.name}.behavior.poke reconciliation parameter_values '
+                        'must be an object')
+                if any(key not in self.parameter_ids for key in values):
+                    raise ProfileError(
+                        f'{self.path.name}.behavior.poke reconciliation references '
+                        'unknown semantic parameter')
+                if 'role' in step and not isinstance(step['role'], str):
+                    raise ProfileError(
+                        f'{self.path.name}.behavior.poke reconciliation role must be text')
+            completion = poke.get('completion')
+            if completion is not None:
+                if not isinstance(completion, dict):
+                    raise ProfileError(
+                        f'{self.path.name}.behavior.poke.completion must be an object')
+                if completion.get('asset') not in self.expressions:
+                    raise ProfileError(
+                        f'{self.path.name}: unknown poke completion asset '
+                        f'{completion.get("asset")}')
+                values = completion.get('parameter_values', {})
+                if not isinstance(values, dict) or any(
+                        key not in self.parameter_ids for key in values):
+                    raise ProfileError(
+                        f'{self.path.name}.behavior.poke completion parameter_values '
+                        'must use known semantic parameters')
 
     def parameter_id(self, semantic):
         return self.parameter_ids.get(semantic)
@@ -193,6 +249,9 @@ class ModelProfile:
     def behavior_settings(self):
         settings = deepcopy(self.behavior)
         settings['head_rect_model'] = list(self.hit_areas['head']['rect'])
+        if 'poke' in settings:
+            region = settings['poke']['interaction_region']
+            settings['poke']['interaction_rect_model'] = list(self.hit_areas[region]['rect'])
         settings['scale'] = self.presentation['scale']
         settings['window_aspect'] = self.presentation['window_aspect']
         settings['window_height_per_character_height'] = self.presentation['window_height_per_character_height']

@@ -58,16 +58,12 @@ This is unrelated to poke/annoyance runtime behavior.
 
 The state stores `profile_id`, but `load_state` does not use it to invalidate or recompute model-specific `visual_bounds`.
 
-### B-2. Petting during transient poke restores the stale poke expression
+### B-2. Fixed: transient poke restored after petting
 
-- Priority: B / high
-- Files/functions: `desktop_pet.py`, `start_reaction`, `register_poke`, `cancel_idle_reaction`
-- Condition: transient 疑惑/白眼/生气 is active, then a successful petting stroke occurs
-- Symptom: positive starts, but after positive ends the old poke expression returns instead of the baseline
-- Evidence: IceGirl runtime check produced `after_positive = 疑惑.exp3.json`
-- Existing tests: persistent-negative recovery is covered conceptually; transient-poke/petting ordering is not
-- Difficulty: low to medium
-- Recommended timing: before poke is considered complete
+- Status: fixed and verified 2026-09-12
+- Files/functions: `desktop_pet.py`, `start_reaction`
+- Fix: active transient/persistent expression ownership transfers directly to positive while preserving its baseline; the old poke expression is neither rendered between states nor restored afterward.
+- Evidence: `probe_poke.py` covers transient poke → positive → baseline and persistent negative → positive.
 
 ### B-3. Missing positive capability enters a no-op positive state
 
@@ -117,18 +113,20 @@ This is an intentional trade-off made to keep hover strokes continuous across ha
 
 This is an inference from the process handoff design, not a currently reproduced production failure.
 
-### B-7. Native hover/petting coverage is currently unreliable
+### B-7. Mitigated: QTest button-free hover delivery
 
-- Priority: B / verification risk
+- Status: harness limitation isolated 2026-09-12
 - Files/functions: `probe_poke.py`, `probe_petting.py`, `probe_idle.py`
-- Condition: button-free QTest mouse movement in the current Windows/Qt environment
-- Symptom: event filter sees no hover moves; detector never activates; probes stop before reaction assertions
-- Evidence: current probes produced zero mouse-move counts and `reaction_delta == 0`
-- Existing tests: direct-call full verifier bypasses this path
-- Difficulty: medium
-- Recommended timing: before declaring poke complete
+- QTest still does not reliably deliver no-button MouseMove on this Windows/Qt stack.
+- Click, drag, right-click/menu, and grab arbitration are exercised through QTest. Hover gesture/state checks invoke the production `PetWindow.hover()` callback deterministically and label this distinction in their artifacts.
+- Native hardware mouse feel remains a manual check; this is not evidence of a production defect.
 
-This is confirmed as a test/harness limitation. It is not enough evidence to label the production mouse-move path broken.
+### B-8. Fixed: context menu during drag could leave pointer state grabbed
+
+- Status: fixed and verified 2026-09-12
+- Files/functions: `desktop_pet.py`, `cancel_pointer_gesture`, `open_menu`
+- Fix: opening the menu ends an active drag or pending click, releases mouse capture, blocks release-tail petting, and never registers a poke.
+- Evidence: `probe_poke.py` opens the context menu during an active QTest drag and checks drag, pointer, mouse-grabber, and annoyance state.
 
 ## C. Lower-priority and edge cases
 

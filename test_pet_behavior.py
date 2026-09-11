@@ -62,6 +62,21 @@ class BehaviorTests(unittest.TestCase):
         idle.interact(10_001)
         self.assertEqual(idle.next_major, 10_002)
 
+    def test_transient_idle_negative_payload_is_profile_driven(self):
+        settings = deepcopy(PROFILE['idle'])
+        settings['major'].update({
+            'delay_seconds': [1, 1],
+            'actions': [{'kind': 'negative', 'weight': 1}]})
+        settings['negative'] = {
+            'persistent': False,
+            'hold_seconds': [9, 9],
+            'expressions': [{'asset': 'mild-annoyance', 'weight': 1}]}
+        idle = IdleScheduler(settings, 20, random.Random(5))
+        self.assertEqual(
+            idle.due(21),
+            ('negative', {'expression': 'mild-annoyance',
+                          'persistent': False, 'hold': 9}))
+
     def test_virtual_monitor_arrangements(self):
         for area in [QRect(0, 0, 1920, 1040), QRect(-2560, -240, 2560, 1400), QRect(1920, 0, 1280, 720)]:
             size = QSize(408, 429)

@@ -56,7 +56,13 @@ class Verifier:
         for box in self.w.checks.values():
             box.setChecked(False)
         self.steps.append((800, 'initial visible model', lambda: self.snapshot('idle')))
+        physics_outputs = self.physics_output_ids()
+        skipped = [pid for pid in self.w.spins if pid in physics_outputs]
+        if skipped:
+            self.report['physics_owned_controls_skipped'] = skipped
         for pid in self.w.spins:
+            if pid in physics_outputs:
+                continue
             for bound in ('min', 'max'):
                 self.steps.append((30, f'set {pid} {bound}', lambda p=pid, b=bound: self.w.spins[p].setValue(self.c.params[p][b])))
                 self.steps.append((100, f'verify {pid} {bound}', lambda p=pid, b=bound: self.assert_param(p, self.c.params[p][b])))
@@ -99,6 +105,20 @@ class Verifier:
         else:
             self.report['sleep_probe'] = {'skipped': 'profile has no sleep motion'}
         self.next()
+
+    def physics_output_ids(self):
+        model_data = json.loads(self.c.path.read_text(encoding='utf-8-sig'))
+        relative = model_data.get('FileReferences', {}).get('Physics')
+        if not relative:
+            return set()
+        physics_path = self.c.path.parent / relative
+        physics = json.loads(physics_path.read_text(encoding='utf-8-sig'))
+        return {
+            output.get('Destination', {}).get('Id')
+            for setting in physics.get('PhysicsSettings', [])
+            for output in setting.get('Output', [])
+            if output.get('Destination', {}).get('Target') == 'Parameter'
+        }
 
     def assert_param(self, pid, value):
         actual = self.c.model.GetParameterValue(self.c.params[pid]['index'])

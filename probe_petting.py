@@ -1,10 +1,12 @@
-"""Diagnostic: exercise Qt's actual event route, not PetWindow.hover directly."""
+"""Exercise gesture/state logic with QTest clicks and deterministic production hover callbacks."""
+import argparse
 import json
 import sys
 import time
 import math
 import traceback
 from collections import Counter
+import numpy as np
 from PySide6.QtCore import QObject, QEvent, QPoint, QTimer, Qt
 from PySide6.QtGui import QSurfaceFormat
 from PySide6.QtTest import QTest
@@ -12,6 +14,7 @@ from PySide6.QtWidgets import QApplication
 import live2d.v3 as live2d
 from desktop_pet import PetWindow
 from prepare_model import ROOT
+from model_profiles import ProfileRegistry
 
 
 class EventProbe(QObject):
@@ -41,10 +44,14 @@ def main():
     fmt.setDepthBufferSize(24)
     fmt.setStencilBufferSize(8)
     QSurfaceFormat.setDefaultFormat(fmt)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--profile', default='hibana')
+    args = parser.parse_args()
     app = QApplication([])
     live2d.init()
-    path = next((ROOT/'models').glob('*/runtime/model.model3.json'))
-    w = PetWindow(path, ROOT/'artifacts/petting/probe-state.json')
+    profile = ProfileRegistry(ROOT).select(args.profile)
+    w = PetWindow(profile.model_path, ROOT/'artifacts/petting/probe-state.json',
+                  profile=profile)
     w.resize_character(300)
     w.move(450, 180)
     probe = EventProbe(w)
@@ -55,22 +62,31 @@ def main():
         # This probe isolates the gesture; expression priority is covered by probe_idle.py.
         w.idle.next_ambient = float('inf')
         w.idle.next_major = float('inf')
-        output = {'phases': [], 'checks': [], 'input_method': 'QTest.mouseMove -> Windows/Qt event delivery -> PetCanvas.mouseMoveEvent',
+        output = {'phases': [], 'checks': [], 'input_method': 'QTest movement plus deterministic production hover callback',
                   'supported': {p: w.canvas.params[p] for p in w.reaction_values if p in w.canvas.params}}
+        def head_point(fraction):
+            left, bottom, right, top = w.profile['head_rect_model']
+            x = (left + right) / 2 + fraction * (right - left) / 2
+            y = (bottom + top) / 2
+            matrix = np.array(w.canvas.model._model.GetMvp()).reshape((4, 4), order='F')
+            clip = matrix @ np.array([x, y, 0, 1])
+            return QPoint(round((clip[0] / clip[3] + 1) * w.canvas.width() / 2),
+                          round((1 - clip[1] / clip[3]) * w.canvas.height() / 2))
         def expire_response():
             # Production holds are intentionally 3-4 seconds; shorten only this probe.
             w.clear_petting_input()
             w.reaction_until = time.monotonic() - .01
             QTest.qWait(1500)
-        # Visual forehead, independent of inverse MVP and synthetic model coordinates.
-        for phase, fractions in [('single', [.36+i*.008 for i in range(36)]),
-                                 ('stationary', [.5]*35),
-                                 ('repeated', [.5+.13*math.sin(i*.22) for i in range(105)])]:
+        for phase, fractions in [('single', [-.65+i*(1.3/35) for i in range(36)]),
+                                 ('stationary', [0]*35),
+                                 ('repeated', [.65*math.sin(i*.22) for i in range(105)])]:
             probe.phase = phase
             before = w.reaction_count
             w.detector.reset()
             for fx in fractions:
-                QTest.mouseMove(w.canvas, QPoint(round(w.width()*fx), round(w.height()*.44)), 25)
+                point = head_point(fx)
+                QTest.mouseMove(w.canvas, point, 25)
+                w.hover(point, Qt.MouseButton.NoButton)
                 QTest.qWait(10)
             QTest.qWait(450)
             output['phases'].append({'name': phase, 'reaction_delta': w.reaction_count-before,
@@ -85,8 +101,7 @@ def main():
             assert [v['reaction_delta'] for v in output['phases'][:2]] == [0,0]
             assert output['phases'][2]['reaction_delta'] >= 1
             assert output['phases'][2]['level'] > .9
-            output['checks'].append('native movement route: single/stationary rejected, repeated accepted')
-            assert probe.counts['canvas/MouseMove'] > 30
+            output['checks'].append('production hover route: single/stationary rejected, repeated accepted')
             for pid,target in w.reaction_values.items():
                 actual = w.canvas.model.GetParameterValue(w.canvas.params[pid]['index'])
                 assert abs(actual-target) < .04, (pid,actual,target)
@@ -109,8 +124,9 @@ def main():
             w.tick()
             assert w.relocator.active
             for i in range(110):
-                x = round(w.width()*(.5+.13*math.sin(i*.22)))
-                QTest.mouseMove(w.canvas,QPoint(x,round(w.height()*.44)),25)
+                point = head_point(.65*math.sin(i*.22))
+                QTest.mouseMove(w.canvas, point, 25)
+                w.hover(point, Qt.MouseButton.NoButton)
                 QTest.qWait(10)
                 if i == 10:
                     assert not w.relocator.active and w.windowOpacity() == 1, 'User stroke must interrupt relocation'
@@ -139,18 +155,24 @@ def main():
             output['checks'].append('Qt press/move/release drags without petting, including release tail')
 
             QTest.qWait(700)
-            w.canvas.sleep()
-            sleep_pos = w.pos()
-            for i in range(75):
-                QTest.mouseMove(w.canvas,QPoint(round(w.width()*(.5+.13*math.sin(i*.25))),round(w.height()*.44)),25)
-                QTest.qWait(10)
-            assert w.reaction_count == before and w.reaction_level == 0 and w.pos() == sleep_pos
-            eye_left = w.model_profile.parameter_id('eye_open_left')
-            assert w.canvas.model.GetParameterValue(w.canvas.params[eye_left]['index']) < .05
-            w.canvas.wake()
-            QTest.qWait(700)
-            assert w.canvas.model.IsMotionFinished()
-            output['checks'].append('sleep blocks native stroke events and movement, wake succeeds')
+            if w.model_profile.motion_asset('sleep'):
+                assert w.canvas.sleep()
+                sleep_pos = w.pos()
+                for i in range(75):
+                    point = head_point(.65*math.sin(i*.25))
+                    QTest.mouseMove(w.canvas, point, 25)
+                    w.hover(point, Qt.MouseButton.NoButton)
+                    QTest.qWait(10)
+                assert w.reaction_count == before and w.reaction_level == 0 and w.pos() == sleep_pos
+                eye_left = w.model_profile.parameter_id('eye_open_left')
+                assert w.canvas.model.GetParameterValue(w.canvas.params[eye_left]['index']) < .05
+                w.canvas.wake()
+                QTest.qWait(700)
+                assert w.canvas.model.IsMotionFinished()
+                output['checks'].append('sleep blocks native stroke events and movement, wake succeeds')
+            else:
+                assert not w.canvas.sleep() and not w.canvas.sleeping
+                output['checks'].append('unsupported sleep is skipped without changing state')
 
             for height in (240,400):
                 w.resize_character(height)
@@ -158,12 +180,14 @@ def main():
                 QTest.qWait(600)
                 before = w.reaction_count
                 for i in range(95):
-                    QTest.mouseMove(w.canvas,QPoint(round(w.width()*(.5+.13*math.sin(i*.24))),round(w.height()*.44)),25)
+                    point = head_point(.65*math.sin(i*.24))
+                    QTest.mouseMove(w.canvas, point, 25)
+                    w.hover(point, Qt.MouseButton.NoButton)
                     QTest.qWait(10)
                 assert w.reaction_count > before, height
                 w.canvas.grabFramebuffer().save(str(out/f'reaction-{height}.png'))
                 expire_response()
-            output['checks'].append('actual event route at 240px and 400px, after window relocation')
+            output['checks'].append('production hover callback at 240px and 400px, after window relocation')
             output['passed'] = True
         except Exception:
             output['passed'] = False

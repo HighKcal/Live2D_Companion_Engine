@@ -332,6 +332,8 @@ def main():
     parser.add_argument('--lab', action='store_true', help='Open the original model laboratory')
     parser.add_argument('--verify-pet', choices=['foundation', 'full', 'restore'])
     parser.add_argument('--state', type=Path, help='Optional local state path for isolated verification')
+    parser.add_argument('--debug-poke', action='store_true',
+                        help='Show poke region and log click classification')
     args = parser.parse_args()
     registry = ProfileRegistry(ROOT)
     for filename, error in registry.errors.items():
@@ -358,7 +360,8 @@ def main():
         win = Window(path.resolve(), profile=profile)
     else:
         from desktop_pet import PetWindow
-        win = PetWindow(path.resolve(), state_path=args.state, profile=profile, registry=registry)
+        win = PetWindow(path.resolve(), state_path=args.state, profile=profile,
+                        registry=registry, poke_debug=args.debug_poke)
     if args.verify:
         from verify_runtime import Verifier
         verifier = Verifier(win)

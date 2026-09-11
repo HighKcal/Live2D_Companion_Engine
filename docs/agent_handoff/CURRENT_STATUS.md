@@ -1,24 +1,16 @@
 # Current Project Status
 
-> This document is a snapshot of the project at inspection time. Before modifying code, verify important claims against the current source.
+> Snapshot updated 2026-09-12. Current source is authoritative.
 
-- Supported models:
-  - `hibana`
-  - `tsubaki`
-  - `icegirl`
+- Supported profiles: `hibana` (스파키), `tsubaki` (카멜리아), `icegirl` (슈아).
+- 슈아 has profile-driven chest poke and head-petting reconciliation.
+- Chest poke progression is `0 → 疑惑 → 生气 → 脸黑`, capped at `脸黑`.
+- Head petting reconciliation is `脸黑 → 生气 → 舌头 → 脸红 → petting response → 爱心眼`.
+- `生气`, `舌头`, `脸红`, and the petting response persist until the next valid head petting. Only the fifth reconciliation petting starts the timed `爱心眼` completion.
+- Ambient/major-idle `生气` remains transient and does not mutate interaction anger.
+- The common engine contains no profile ID or model-specific expression branch.
+- Large restored sizes use visual bounds when a full framebuffer silhouette is intentionally skipped, keeping chest interaction available.
 
-- Current feature in progress: IceGirl poke / annoyance progression
+See `POKE_HANDOFF.md` for schema and verification details.
 
-- Current state: implementation mostly complete; verification and finishing stage
-
-- Read first:
-  - `docs/agent_handoff/POKE_HANDOFF.md`
-  - `docs/agent_handoff/BUG_AUDIT.md`
-
-- Deferred examples:
-  - sleep/wake versus persistent mood policy
-  - QTest non-button hover reliability
-  - giant character size / taskbar flicker validation
-  - lower-priority items listed in `BUG_AUDIT.md`
-
-- Recommended next task: finish poke-specific tests and native-input verification, then run the hibana/tsubaki regression suite again.
+Verification: 24 explicit unit tests, the IceGirl poke probe, three-profile petting and idle probes, three-profile full pet verifier, and three-profile runtime verifier pass. Broad unittest discovery retains the unrelated missing `research._v3cpp` collection error.

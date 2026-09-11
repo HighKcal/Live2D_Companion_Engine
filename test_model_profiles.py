@@ -98,7 +98,10 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(registry.get('hibana').behavior_settings()['render_window_scale'], 2.0)
         self.assertEqual(registry.get('hibana').behavior_settings()['bottom_offscreen_fraction'], 0.65)
         icegirl = registry.get('icegirl')
-        self.assertEqual(icegirl.display_name, 'IceGirl')
+        self.assertEqual(
+            registry.menu_entries(),
+            [('hibana', '스파키'), ('icegirl', '슈아'), ('tsubaki', '카멜리아')])
+        self.assertEqual(icegirl.display_name, '슈아')
         self.assertEqual(len(icegirl.assets['expressions']), 20)
         self.assertEqual(len(icegirl.assets['motions']), 3)
         self.assertEqual(icegirl.expression_index('疑惑.exp3.json'), 11)
@@ -109,13 +112,33 @@ class ProfileTests(unittest.TestCase):
                          [{'kind': 'negative', 'weight': 1}])
         self.assertEqual(icegirl.behavior_settings()['head_rect_model'],
                          [-0.13, 0.34, 0.13, 0.64])
+        self.assertEqual(icegirl.behavior_settings()['poke']['interaction_rect_model'],
+                         [-0.1, 0.18, 0.1, 0.34])
         positive = icegirl.expression_candidates('positive')[0]['parameter_values']
         self.assertEqual((positive['blush'], positive['heart_eyes']), (1.0, 1.0))
         self.assertEqual(
-            [(item['threshold'], item['asset'])
-             for item in icegirl.behavior['poke']['reactions']],
-            [(2, '疑惑.exp3.json'), (4, '白眼.exp3.json'),
-             (6, '生气.exp3.json'), (8, '脸黑.exp3.json')])
+            [(item['level'], item['asset'])
+             for item in icegirl.behavior['poke']['levels']],
+            [(1, '疑惑.exp3.json'), (2, '生气.exp3.json'),
+             (3, '脸黑.exp3.json')])
+        self.assertEqual(
+            [(item['remaining_level'], item['asset'])
+             for item in icegirl.behavior['poke']['reconciliation']],
+            [(2, '生气.exp3.json'), (1, '舌头.exp3.json'),
+             (0, '脸红.exp3.json'), (0, '脸红.exp3.json')])
+        self.assertEqual(
+            icegirl.behavior['poke']['reconciliation'][-1]['role'],
+            'accepting_petting')
+        self.assertNotIn(
+            'heart_eyes',
+            icegirl.behavior['poke']['reconciliation'][-1]['parameter_values'])
+        self.assertEqual(
+            icegirl.behavior['poke']['completion']['asset'],
+            '爱心眼.exp3.json')
+        self.assertEqual(
+            [item['asset'] for item in icegirl.expression_candidates('negative')],
+            ['生气.exp3.json'])
+        self.assertFalse(icegirl.behavior_settings()['idle']['negative']['persistent'])
         self.assertNotIn('poke', registry.get('hibana').behavior)
         self.assertNotIn('poke', registry.get('tsubaki').behavior)
 
@@ -137,25 +160,42 @@ class ProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ProfileError, 'unknown semantic parameter'):
             ModelProfile(self.write_profile(data=data), self.root)
 
-    def test_optional_poke_assets_and_thresholds_are_validated(self):
+    def test_optional_poke_levels_region_and_reconciliation_are_validated(self):
         data = self.profile_data()
+        data['hit_areas']['poke_chest'] = {
+            'type': 'rect', 'space': 'model', 'rect': [-.2, 0, .2, .4]}
         data['behavior']['poke'] = {
-            'reset_seconds': 15, 'max_click_seconds': .5,
+            'interaction_region': 'poke_chest',
+            'max_click_seconds': .5,
             'drag_threshold_pixels': 8,
-            'reactions': [
-                {'threshold': 2, 'asset': 'Expressions/happy.exp3.json',
-                 'hold_seconds': [1, 2]},
-                {'threshold': 4, 'asset': 'Expressions/happy.exp3.json',
+            'levels': [
+                {'level': 1, 'asset': 'Expressions/happy.exp3.json'},
+                {'level': 2, 'asset': 'Expressions/happy.exp3.json',
                  'persistent_negative': True},
-            ]}
+            ],
+            'reconciliation': [
+                {'asset': 'Expressions/happy.exp3.json', 'remaining_level': 1},
+                {'asset': 'Expressions/happy.exp3.json', 'remaining_level': 0,
+                 'parameter_values': {'eye_open_left': 0, 'optional_heart': 1}}],
+            'completion': {'asset': 'Expressions/happy.exp3.json'}}
         profile = ModelProfile(self.write_profile(data=data), self.root)
-        self.assertEqual(profile.behavior['poke']['reactions'][-1]['threshold'], 4)
-        data['behavior']['poke']['reactions'][1]['threshold'] = 2
-        with self.assertRaisesRegex(ProfileError, 'thresholds'):
+        self.assertEqual(profile.behavior_settings()['poke']['interaction_rect_model'],
+                         [-.2, 0, .2, .4])
+        values, missing = profile.resolve_values(
+            profile.behavior['poke']['reconciliation'][1]['parameter_values'],
+            {'EyeL': object()})
+        self.assertEqual(values, {'EyeL': 0})
+        self.assertEqual(missing, ['optional_heart'])
+        data['behavior']['poke']['levels'][1]['level'] = 3
+        with self.assertRaisesRegex(ProfileError, 'sequential'):
             ModelProfile(self.write_profile(data=data), self.root)
-        data['behavior']['poke']['reactions'][1]['threshold'] = 4
-        data['behavior']['poke']['reactions'][0]['asset'] = 'missing.exp3.json'
-        with self.assertRaisesRegex(ProfileError, 'unknown poke expression'):
+        data['behavior']['poke']['levels'][1]['level'] = 2
+        data['behavior']['poke']['interaction_region'] = 'missing'
+        with self.assertRaisesRegex(ProfileError, 'interaction_region'):
+            ModelProfile(self.write_profile(data=data), self.root)
+        data['behavior']['poke']['interaction_region'] = 'poke_chest'
+        data['behavior']['poke']['reconciliation'][0]['asset'] = 'missing.exp3.json'
+        with self.assertRaisesRegex(ProfileError, 'unknown poke reconciliation'):
             ModelProfile(self.write_profile(data=data), self.root)
 
     def test_missing_capabilities_are_valid(self):

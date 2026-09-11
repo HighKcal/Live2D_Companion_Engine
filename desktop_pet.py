@@ -9,8 +9,8 @@ import time
 import numpy as np
 from OpenGL.GL import glReadPixels, GL_RGBA, GL_UNSIGNED_BYTE
 from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QSize, QProcess, QTimer
-from PySide6.QtGui import (QIcon, QPixmap, QPainter, QColor, QImage, QBitmap, QRegion,
-                           QCursor, QTransform)
+from PySide6.QtGui import (QIcon, QPixmap, QPainter, QPen, QColor, QImage, QBitmap,
+                           QRegion, QCursor, QTransform)
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QMenu,
                                QSystemTrayIcon, QLabel, QSlider, QWidgetAction)
 from app import Canvas, Window
@@ -37,6 +37,43 @@ def bounded(value, first, second):
 def clamp_position(point, size, area):
     return QPoint(max(area.left(), min(point.x(), area.right() - size.width() + 1)),
                   max(area.top(), min(point.y(), area.bottom() - size.height() + 1)))
+
+
+class PokeDebugOverlay(QWidget):
+    """Input-transparent overlay for diagnosing profile/model hit alignment."""
+    def __init__(self, canvas, owner):
+        super().__init__(canvas)
+        self.owner = owner
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setGeometry(canvas.rect())
+        self.show()
+        self.raise_()
+
+    def paintEvent(self, event):
+        poke = self.owner.profile.get('poke')
+        if not poke or not self.owner.canvas.model:
+            return
+        rect = self.owner.project_model_rect(poke.get('interaction_rect_model'))
+        if rect.isEmpty():
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QColor(255, 50, 50, 55))
+        painter.setPen(QPen(QColor(255, 70, 70, 230), 2))
+        painter.drawRect(rect)
+        painter.setPen(QColor(255, 255, 255, 240))
+        painter.drawText(rect.adjusted(4, 2, -2, -2), Qt.AlignmentFlag.AlignTop,
+                         'poke_chest')
+        if self.owner.debug_press_point is not None:
+            painter.setBrush(QColor(60, 220, 100, 210))
+            painter.setPen(QPen(QColor(255, 255, 255), 1))
+            painter.drawEllipse(self.owner.debug_press_point, 6, 6)
+        if self.owner.debug_release_point is not None:
+            painter.setBrush(QColor(80, 160, 255, 210))
+            painter.setPen(QPen(QColor(255, 255, 255), 1))
+            painter.drawEllipse(self.owner.debug_release_point, 5, 5)
+        painter.end()
 
 
 class PetCanvas(Canvas):
@@ -72,6 +109,25 @@ class PetCanvas(Canvas):
             self.owner.end_pointer_release(event.globalPosition(), event.position())
             event.accept()
 
+    def select_expression(self, expression):
+        before = self.expression
+        super().select_expression(expression)
+        if self.owner.poke_debug:
+            requested = expression
+            if isinstance(requested, int):
+                requested = (self.profile.asset_identifier(self.assets['expressions'][requested])
+                             if 0 <= requested < len(self.assets['expressions']) else None)
+            print('POKE_DEBUG_EXPRESSION_APPLY', json.dumps({
+                'requested_expression': requested,
+                'expression_index': self.expression_indexes.get(requested),
+                'canvas_expression_before': before,
+                'canvas_expression_after': self.expression,
+                'sleeping': self.sleeping,
+                'idle_kind': self.owner.idle_kind,
+                'idle_expression': self.owner.idle_expression,
+                'reaction_expression': self.owner.reaction_expression,
+            }, ensure_ascii=False), flush=True)
+
     def contextMenuEvent(self, event):
         self.owner.open_menu(event.globalPos())
 
@@ -81,6 +137,11 @@ class PetCanvas(Canvas):
     def resizeGL(self, w, h):
         super().resizeGL(w, h)
         self.owner.inverse_mvp = None
+        overlay = getattr(self.owner, 'poke_debug_overlay', None)
+        if overlay is not None:
+            overlay.setGeometry(self.rect())
+            overlay.raise_()
+            overlay.update()
 
     def sleep(self, automatic=False):
         if self.profile.motion_asset('sleep') not in self.motion_indexes:
@@ -120,11 +181,16 @@ class PetCanvas(Canvas):
 
 
 class PetWindow(QWidget):
-    def __init__(self, path, state_path=None, profile=None, registry=None):
+    def __init__(self, path, state_path=None, profile=None, registry=None,
+                 poke_debug=False):
         super().__init__()
         self.registry = registry or ProfileRegistry(ROOT)
         self.model_profile = profile or self.registry.select(model_path=path)
         self.profile = self.model_profile.behavior_settings()
+        self.poke_debug = bool(poke_debug)
+        self.debug_press_point = None
+        self.debug_release_point = None
+        self.poke_debug_overlay = None
         self.state_path = state_path or ROOT / 'local' / 'pet-state.json'
         self.setWindowTitle(f'{self.model_profile.display_name} 데스크톱 펫')
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint |
@@ -138,6 +204,7 @@ class PetWindow(QWidget):
         self.pointer_press_local = None
         self.pointer_press_started = 0.0
         self.pointer_press_on_silhouette = False
+        self.pointer_press_in_poke_region = False
         self.menu_active = False
         self.autonomous = True
         self.character_height = SIZE_POLICY['default']
@@ -168,12 +235,19 @@ class PetWindow(QWidget):
         self._input_region_size = QSize(1, 1)
         self._silhouette_region = None
         self._silhouette_region_size = QSize(1, 1)
+        # Kept as a compact 0..N level for compatibility with existing probes.
         self.annoyance_count = 0
         self.annoyance_last_poke = 0.0
+        self.annoyance_base_expression = None
+        self.annoyance_reconciliation_index = None
+        self._poke_debug_last_lifecycle = None
+        self._poke_debug_expected_expression = None
         self.last_tick = time.monotonic()
         self.was_blocked = False
         self.mask_due = True
         self.canvas = PetCanvas(path, self, self.model_profile)
+        if self.poke_debug:
+            self.poke_debug_overlay = PokeDebugOverlay(self.canvas, self)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.canvas)
@@ -339,8 +413,41 @@ class PetWindow(QWidget):
                 'values': values, 'expression': item.get('asset') if not values else None})
             if missing:
                 print(f'PROFILE optional positive parameters unavailable: {", ".join(missing)}', flush=True)
+        self.reconciliation_reactions = []
+        for item in (self.profile.get('poke') or {}).get('reconciliation', []):
+            values, missing = self.model_profile.resolve_values(
+                item.get('parameter_values', {}), self.canvas.params)
+            self.reconciliation_reactions.append({
+                'values': values,
+                'expression': item.get('asset') if not values else None})
+            if missing:
+                print('PROFILE optional reconciliation parameters unavailable: '
+                      + ', '.join(missing), flush=True)
+        completion = (self.profile.get('poke') or {}).get('completion')
+        self.reconciliation_completion = None
+        if completion:
+            values, missing = self.model_profile.resolve_values(
+                completion.get('parameter_values', {}), self.canvas.params)
+            self.reconciliation_completion = {
+                'values': values,
+                'expression': completion.get('asset') if not values else None}
+            if missing:
+                print('PROFILE optional reconciliation completion parameters unavailable: '
+                      + ', '.join(missing), flush=True)
         self.reaction_values = self.positive_reactions[0]['values'] if self.positive_reactions else {}
         self.mask_timer.start()
+        if self.poke_debug_overlay is not None:
+            self.poke_debug_overlay.setGeometry(self.canvas.rect())
+            self.poke_debug_overlay.raise_()
+            self.poke_debug_overlay.update()
+            rect = self.project_model_rect(
+                self.profile['poke']['interaction_rect_model'])
+            print('POKE_DEBUG_REGION', json.dumps({
+                'model_rect': self.profile['poke']['interaction_rect_model'],
+                'canvas_rect': list(rect.getRect()),
+                'canvas_size': [self.canvas.width(), self.canvas.height()],
+                'window_position': [self.x(), self.y()],
+            }, ensure_ascii=False), flush=True)
         print('PET_READY', self.geometry().getRect(), 'DPR', self.devicePixelRatioF(),
               'MVP', self.canvas.model._model.GetMvp(), flush=True)
 
@@ -375,11 +482,10 @@ class PetWindow(QWidget):
         self._input_region_size = QSize(self.canvas.size())
         self.apply_input_region(region)
 
-    def head_input_region(self):
-        # Keep the small, profile-defined head area continuous for hover strokes.
-        # Alpha-only HWND masks contain gaps between hair strands; crossing one
-        # produces Leave events and clears a valid petting gesture.
-        left, bottom, right, top = self.profile['head_rect_model']
+    def project_model_rect(self, rect):
+        if not self.canvas.model or not rect:
+            return QRect()
+        left, bottom, right, top = rect
         matrix = np.array(self.canvas.model._model.GetMvp()).reshape((4, 4), order='F')
         projected = []
         for x, y in ((left, bottom), (left, top), (right, bottom), (right, top)):
@@ -387,10 +493,16 @@ class PetWindow(QWidget):
             projected.append(((clip[0] / clip[3] + 1) * self.canvas.width() / 2,
                               (1 - clip[1] / clip[3]) * self.canvas.height() / 2))
         xs, ys = zip(*projected)
-        head_rect = QRect(QPoint(int(np.floor(min(xs))), int(np.floor(min(ys)))),
-                          QPoint(int(np.ceil(max(xs))), int(np.ceil(max(ys))))).intersected(
-                              self.canvas.rect())
-        return QRegion(head_rect)
+        return QRect(
+            QPoint(int(np.floor(min(xs))), int(np.floor(min(ys)))),
+            QPoint(int(np.ceil(max(xs))), int(np.ceil(max(ys))))).intersected(
+                self.canvas.rect())
+
+    def head_input_region(self):
+        # Keep the small, profile-defined head area continuous for hover strokes.
+        # Alpha-only HWND masks contain gaps between hair strands; crossing one
+        # produces Leave events and clears a valid petting gesture.
+        return QRegion(self.project_model_rect(self.profile['head_rect_model']))
 
     def apply_input_region(self, content_region):
         region = content_region.united(self.head_input_region()).translated(self._content_offset)
@@ -409,7 +521,10 @@ class PetWindow(QWidget):
 
     def silhouette_contains(self, point):
         if self._silhouette_region is None:
-            return False
+            # Large restored sizes deliberately skip a full framebuffer read.
+            # Match the visual-bounds fallback already used by the window mask
+            # so visible interactions do not become impossible at startup.
+            return self.visual_bounds().contains(point)
         source = self._silhouette_region_size
         if source.width() <= 0 or source.height() <= 0:
             return False
@@ -417,12 +532,40 @@ class PetWindow(QWidget):
                         round(point.y() * source.height() / max(1, self.canvas.height())))
         return self._silhouette_region.contains(mapped)
 
+    @staticmethod
+    def model_rect_contains(model_point, rect):
+        if model_point is None or not rect:
+            return False
+        x, y = model_point
+        left, bottom, right, top = rect
+        return left <= x <= right and bottom <= y <= top
+
+    def poke_region_contains(self, point):
+        poke = self.profile.get('poke')
+        return bool(poke and self.model_rect_contains(
+            self.to_model(point), poke.get('interaction_rect_model')))
+
     def begin_pointer_press(self, global_pos, local_pos):
         self.pointer_pressed = True
         self.pointer_press_global = QPointF(global_pos)
         self.pointer_press_local = QPointF(local_pos)
         self.pointer_press_started = time.monotonic()
-        self.pointer_press_on_silhouette = self.silhouette_contains(local_pos.toPoint())
+        point = local_pos.toPoint()
+        self.pointer_press_on_silhouette = self.silhouette_contains(point)
+        self.pointer_press_in_poke_region = self.poke_region_contains(point)
+        if self.poke_debug:
+            self.debug_press_point = QPoint(point)
+            self.debug_release_point = None
+            model_point = self.to_model(point)
+            print('POKE_DEBUG_PRESS', json.dumps({
+                'local': [point.x(), point.y()],
+                'global': [round(global_pos.x()), round(global_pos.y())],
+                'model': list(model_point) if model_point else None,
+                'chest_hit': self.pointer_press_in_poke_region,
+                'silhouette_hit': self.pointer_press_on_silhouette,
+                'annoyance_before': self.annoyance_count,
+            }, ensure_ascii=False), flush=True)
+            self.poke_debug_overlay.update()
         self.cancel_relocation(self.pointer_press_started)
         self.detector.reset()
         self.canvas.grabMouse()
@@ -443,20 +586,60 @@ class PetWindow(QWidget):
             return
         was_dragging = self.dragging
         elapsed = time.monotonic() - self.pointer_press_started
-        press_hit = self.pointer_press_on_silhouette
-        release_hit = self.silhouette_contains(local_pos.toPoint())
+        press_local = QPointF(self.pointer_press_local)
+        press_global = QPointF(self.pointer_press_global)
+        press_silhouette = self.pointer_press_on_silhouette
+        press_chest = self.pointer_press_in_poke_region
+        point = local_pos.toPoint()
+        release_silhouette = self.silhouette_contains(point)
+        release_chest = self.poke_region_contains(point)
+        press_hit = press_silhouette and press_chest
+        release_hit = release_silhouette and release_chest
+        before = self.annoyance_count
+        poke = self.profile.get('poke')
+        max_seconds = poke.get('max_click_seconds', .5) if poke else .5
+        valid_click = bool(
+            not was_dragging and press_hit and release_hit and
+            elapsed <= max_seconds)
+        attempted_expression = None
+        if valid_click and poke:
+            level = min(before + 1, len(poke['levels']))
+            attempted_expression = self.annoyance_level(level)['asset']
         self.pointer_pressed = False
         self.pointer_press_global = None
         self.pointer_press_local = None
         self.pointer_press_on_silhouette = False
+        self.pointer_press_in_poke_region = False
+        registered = False
         if was_dragging:
             self.end_drag()
-            return
-        self.canvas.releaseMouse()
-        poke = self.profile.get('poke')
-        max_seconds = poke.get('max_click_seconds', .5) if poke else .5
-        if press_hit and release_hit and elapsed <= max_seconds:
-            self.register_poke(time.monotonic())
+        else:
+            self.canvas.releaseMouse()
+            if valid_click:
+                registered = self.register_poke(time.monotonic())
+        if self.poke_debug:
+            self.debug_release_point = QPoint(point)
+            model_point = self.to_model(point)
+            print('POKE_DEBUG_RELEASE', json.dumps({
+                'press_local': [round(press_local.x()), round(press_local.y())],
+                'release_local': [point.x(), point.y()],
+                'press_global': [round(press_global.x()), round(press_global.y())],
+                'release_global': [round(global_pos.x()), round(global_pos.y())],
+                'release_model': list(model_point) if model_point else None,
+                'press_chest_hit': press_chest,
+                'release_chest_hit': release_chest,
+                'press_silhouette_hit': press_silhouette,
+                'release_silhouette_hit': release_silhouette,
+                'elapsed_seconds': round(elapsed, 3),
+                'drag': was_dragging,
+                'valid_click': valid_click,
+                'registered': bool(registered),
+                'annoyance_before': before,
+                'annoyance_after': self.annoyance_count,
+                'attempted_expression': attempted_expression,
+                'active_expression': self.idle_expression,
+            }, ensure_ascii=False), flush=True)
+            self.poke_debug_overlay.update()
 
     def begin_drag(self, global_pos):
         self.note_interaction()
@@ -552,29 +735,44 @@ class PetWindow(QWidget):
     def start_reaction(self, now):
         if self.canvas.sleeping or self.dragging or self.menu_active:
             return
-        self.reset_annoyance()
-        recovered_negative = self.idle_kind == 'negative'
-        previous_expression = self.canvas.expression
-        if recovered_negative:
-            previous_expression = self.idle_previous_expression
-            self.cancel_idle_reaction(restore=False, reschedule=False, now=now,
-                                      include_negative=True)
+        if (self.annoyance_count > 0 or
+                self.annoyance_reconciliation_index is not None):
+            self.deescalate_annoyance(now)
+            return
+        self.start_positive_reaction(now)
+
+    def start_positive_reaction(self, now, previous_expression=None,
+                                recovered_negative=False):
+        if previous_expression is None:
+            recovered_negative = self.idle_kind == 'negative'
+            previous_expression = self.canvas.expression
+            if self.idle_expression is not None:
+                # Expression ownership transfers directly to positive. Preserve
+                # the underlying baseline without rendering an intermediate frame.
+                previous_expression = self.idle_previous_expression
+                self.cancel_idle_reaction(
+                    restore=False, reschedule=False, now=now, include_negative=True)
+                self.idle.interact(now)
+                self.cancel_relocation(now)
+            else:
+                self.note_interaction(now)
+        else:
             self.idle.interact(now)
             self.cancel_relocation(now)
-        else:
-            self.note_interaction(now)
         if self.reaction_expression is None:
             self.reaction_expression = previous_expression
             self.canvas.model.ResetExpressions()
             if self.positive_reactions:
-                selected = random.choices(self.positive_reactions,
-                                          weights=[item['weight'] for item in self.positive_reactions], k=1)[0]
+                selected = random.choices(
+                    self.positive_reactions,
+                    weights=[item['weight'] for item in self.positive_reactions], k=1)[0]
                 self.reaction_values = selected['values']
                 if selected['expression']:
                     self.canvas.select_expression(selected['expression'])
                 else:
                     self.canvas.model.ResetExpressions()
-            self.reaction_hold_seconds = random.uniform(*self.profile['petting']['positive_hold_seconds'])
+            self.reaction_hold_seconds = random.uniform(
+                *self.profile['petting']['positive_hold_seconds'])
         self.reaction_count += 1
         self.reaction_until = now + self.reaction_hold_seconds
         self.cancel_relocation(now)
@@ -584,55 +782,173 @@ class PetWindow(QWidget):
     def reset_annoyance(self):
         self.annoyance_count = 0
         self.annoyance_last_poke = 0.0
+        self.annoyance_base_expression = None
+        self.annoyance_reconciliation_index = None
+
+    def annoyance_level(self, level):
+        settings = self.profile.get('poke') or {}
+        return next((item for item in settings.get('levels', [])
+                     if item['level'] == level), None)
+
+    def apply_annoyance_level(self, level, now):
+        entry = self.annoyance_level(level)
+        if entry is None or entry['asset'] not in self.canvas.expression_indexes:
+            return False
+        if self.annoyance_count == 0 or self.annoyance_base_expression is None:
+            self.annoyance_base_expression = (
+                self.idle_previous_expression
+                if self.idle_expression is not None else self.canvas.expression)
+        if self.idle_expression is not None:
+            self.cancel_idle_reaction(
+                restore=False, reschedule=False, now=now, include_negative=True)
+        if self.reaction_expression is not None or self.reaction_level > 0:
+            self.cancel_reaction()
+        self.annoyance_count = level
+        self.annoyance_reconciliation_index = None
+        self.annoyance_last_poke = now
+        kind = 'negative' if entry.get('persistent_negative', False) else 'annoyance'
+        started = self.start_idle_reaction(
+            now, entry['asset'], float('inf'), kind, allow_interaction=True)
+        if started:
+            self.idle_previous_expression = self.annoyance_base_expression
+            if kind == 'negative':
+                self.idle.next_major = float('inf')
+        return started
+
+    def apply_reconciliation_step(self, index, now):
+        settings = self.profile.get('poke') or {}
+        steps = settings.get('reconciliation', [])
+        if not 0 <= index < len(steps):
+            return False
+        entry = steps[index]
+        configured = (self.reconciliation_reactions[index]
+                      if index < len(self.reconciliation_reactions) else None)
+        if configured is None:
+            return False
+        if self.annoyance_base_expression is None:
+            self.annoyance_base_expression = (
+                self.idle_previous_expression
+                if self.idle_expression is not None else self.canvas.expression)
+        if self.idle_expression is not None:
+            self.cancel_idle_reaction(
+                restore=False, reschedule=False, now=now, include_negative=True)
+        if self.reaction_expression is not None or self.reaction_level > 0:
+            self.cancel_reaction(restore=False)
+        self.annoyance_reconciliation_index = index
+        self.annoyance_count = entry['remaining_level']
+        self.annoyance_last_poke = now
+        if configured['values']:
+            self.reaction_expression = self.annoyance_base_expression
+            self.reaction_values = configured['values']
+            self.reaction_hold_seconds = float('inf')
+            self.reaction_until = float('inf')
+            if configured['expression']:
+                self.canvas.select_expression(configured['expression'])
+            else:
+                self.canvas.model.ResetExpressions()
+            return True
+        started = self.start_idle_reaction(
+            now, configured['expression'], float('inf'), 'annoyance',
+            allow_interaction=True)
+        if started:
+            self.idle_previous_expression = self.annoyance_base_expression
+        return started
+
+    def deescalate_annoyance(self, now):
+        settings = self.profile.get('poke') or {}
+        steps = settings.get('reconciliation', [])
+        self.idle.interact(now)
+        self.cancel_relocation(now)
+
+        if self.annoyance_reconciliation_index is None:
+            next_index = next(
+                (index for index, item in enumerate(steps)
+                 if item['remaining_level'] == self.annoyance_count - 1),
+                len(steps))
+        else:
+            next_index = self.annoyance_reconciliation_index + 1
+
+        if next_index < len(steps):
+            source = self.idle_expression
+            self.reaction_count += 1
+            if self.apply_reconciliation_step(next_index, now):
+                print(f'PETTING reconcile={ascii(source)}->{ascii(steps[next_index]["asset"])}',
+                      flush=True)
+            return
+
+        baseline = self.annoyance_base_expression
+        self.cancel_idle_reaction(
+            restore=False, reschedule=False, now=now, include_negative=True)
+        if self.reaction_expression is not None or self.reaction_level > 0:
+            self.cancel_reaction(restore=False)
+        completion = self.reconciliation_completion
+        self.reset_annoyance()
+        if completion is None:
+            self.start_positive_reaction(
+                now, previous_expression=baseline, recovered_negative=True)
+            return
+        self.reaction_expression = baseline
+        self.reaction_values = completion['values']
+        self.canvas.model.ResetExpressions()
+        if completion['expression']:
+            self.canvas.select_expression(completion['expression'])
+        self.reaction_hold_seconds = random.uniform(
+            *self.profile['petting']['positive_hold_seconds'])
+        self.reaction_count += 1
+        self.reaction_until = now + self.reaction_hold_seconds
+        self.cancel_relocation(now)
+        print('PETTING reconciliation=complete', flush=True)
 
     def register_poke(self, now):
         settings = self.profile.get('poke')
+        if self.poke_debug:
+            print('POKE_DEBUG_REGISTER_ENTER', json.dumps({
+                'has_poke_profile': bool(settings),
+                'sleeping': self.canvas.sleeping,
+                'dragging': self.dragging,
+                'menu_active': self.menu_active,
+                'annoyance_before': self.annoyance_count,
+            }, ensure_ascii=False), flush=True)
         if not settings:
             self.note_interaction(now)
             return False
         if self.canvas.sleeping or self.dragging or self.menu_active:
             return False
-        if self.idle_kind == 'negative':
-            self.idle.interact(now)
-            self.cancel_relocation(now)
-            return False
         if self.reaction_expression is not None or self.reaction_level > 0:
+            self.cancel_reaction()
+        maximum = len(settings['levels'])
+        if self.annoyance_count >= maximum:
+            self.annoyance_count = maximum
+            self.annoyance_last_poke = now
             self.idle.interact(now)
             self.cancel_relocation(now)
-            return False
-        if (self.annoyance_last_poke and
-                now - self.annoyance_last_poke > settings['reset_seconds']):
-            self.reset_annoyance()
-        self.annoyance_count += 1
-        self.annoyance_last_poke = now
-        if self.idle_kind == 'ambient':
-            self.cancel_idle_reaction(now=now)
-        self.idle.interact(now)
-        self.cancel_relocation(now)
-        reaction = next((item for item in settings['reactions']
-                         if item['threshold'] == self.annoyance_count), None)
-        if reaction is None:
-            print(f'POKE count={self.annoyance_count}', flush=True)
+            print(f'POKE level={maximum} capped', flush=True)
             return True
-
-        previous = self.canvas.expression
-        if self.idle_kind == 'poke':
-            previous = self.idle_previous_expression
-            self.cancel_idle_reaction(restore=False, reschedule=False, now=now)
-        persistent = reaction.get('persistent_negative', False)
-        kind = 'negative' if persistent else 'poke'
-        hold = float('inf') if persistent else random.uniform(*reaction['hold_seconds'])
-        started = self.start_idle_reaction(now, reaction['asset'], hold, kind)
+        level = self.annoyance_count + 1
+        started = self.apply_annoyance_level(level, now)
         if started:
-            self.idle_previous_expression = previous
-            if persistent:
-                self.idle.next_major = float('inf')
-            print(f'POKE count={self.annoyance_count} reaction={ascii(reaction["asset"])}'
-                  f' persistent={persistent}', flush=True)
+            self.idle.interact(now)
+            self.cancel_relocation(now)
+            entry = self.annoyance_level(level)
+            print(f'POKE level={level} reaction={ascii(entry["asset"])}'
+                  f' persistent={entry.get("persistent_negative", False)}', flush=True)
+        if self.poke_debug:
+            entry = self.annoyance_level(level)
+            self._poke_debug_expected_expression = entry['asset'] if started and entry else None
+            print('POKE_DEBUG_REGISTER_EXIT', json.dumps({
+                'started': started,
+                'annoyance_after': self.annoyance_count,
+                'selected_expression': entry['asset'] if entry else None,
+                'canvas_expression': self.canvas.expression,
+                'idle_kind': self.idle_kind,
+                'idle_expression': self.idle_expression,
+            }, ensure_ascii=False), flush=True)
         return started
 
-    def start_idle_reaction(self, now, expression, hold, kind):
-        if (self.canvas.sleeping or self.dragging or self.menu_active or self.detector.active or
+    def start_idle_reaction(self, now, expression, hold, kind,
+                            allow_interaction=False):
+        if (self.canvas.sleeping or self.dragging or self.menu_active or
+                (self.detector.active and not allow_interaction) or
                 self.reaction_expression is not None or self.reaction_level > 0 or
                 (self.panel is not None and self.panel.isVisible())):
             return False
@@ -641,7 +957,8 @@ class PetWindow(QWidget):
         self.idle_previous_expression = self.canvas.expression
         self.idle_expression = expression
         self.idle_kind = kind
-        self.idle_until = float('inf') if kind == 'negative' else now + hold
+        self.idle_until = (float('inf') if kind in ('negative', 'annoyance')
+                           else now + hold)
         self.canvas.select_expression(expression)
         self.idle_count += 1
         self.cancel_relocation(now)
@@ -652,7 +969,8 @@ class PetWindow(QWidget):
                              include_negative=False):
         if self.idle_expression is None:
             return
-        if self.idle_kind == 'negative' and not include_negative:
+        if (self.idle_kind in ('negative', 'annoyance')
+                and not include_negative):
             return
         previous = self.idle_previous_expression
         kind = self.idle_kind
@@ -661,17 +979,20 @@ class PetWindow(QWidget):
         self.idle_previous_expression = None
         self.idle_until = 0.0
         if reschedule:
-            self.idle.finished(kind, time.monotonic() if now is None else now)
+            schedule_kind = 'negative' if kind == 'idle_negative' else kind
+            self.idle.finished(
+                schedule_kind, time.monotonic() if now is None else now)
         if restore and self.canvas.model and not self.canvas.sleeping:
             self.canvas.select_expression(previous)
 
-    def cancel_reaction(self):
+    def cancel_reaction(self, restore=True):
         if self.reaction_expression is not None and self.canvas.model:
             previous = self.reaction_expression
             self.reaction_expression = None
             for pid in getattr(self, 'reaction_values', {}):
                 self.canvas.set_param(pid, self.canvas.params[pid]['default'])
-            self.canvas.select_expression(previous)
+            if restore:
+                self.canvas.select_expression(previous)
         self.reaction_level = 0.0
         self.reaction_until = 0.0
         self.reaction_hold_seconds = 0.0
@@ -694,15 +1015,9 @@ class PetWindow(QWidget):
             if self.reaction_level == 0 and self.reaction_expression is not None:
                 self.cancel_reaction()
                 self.cancel_relocation(now)
-        if self.idle_kind in ('ambient', 'poke') and now >= self.idle_until:
-            self.cancel_idle_reaction()
+        if self.idle_kind in ('ambient', 'idle_negative') and now >= self.idle_until:
+            self.cancel_idle_reaction(include_negative=True)
             self.cancel_relocation(now)
-        poke = self.profile.get('poke')
-        if (poke and self.idle_kind != 'negative' and self.annoyance_last_poke and
-                now - self.annoyance_last_poke > poke['reset_seconds']):
-            if self.idle_kind == 'poke':
-                self.cancel_idle_reaction(now=now)
-            self.reset_annoyance()
         idle_blocked = (self.dragging or self.menu_active or self.canvas.sleeping or self.detector.active or
                         self.reaction_expression is not None or self.reaction_level > 0 or
                         self.idle_expression is not None or self.relocator.active or
@@ -717,7 +1032,10 @@ class PetWindow(QWidget):
             elif kind in ('ambient', 'negative'):
                 if kind == 'negative' and self.idle_kind == 'ambient':
                     self.cancel_idle_reaction()
-                if not self.start_idle_reaction(now, payload['expression'], payload.get('hold'), kind):
+                persistent = payload.get('persistent', True) if kind == 'negative' else False
+                display_kind = ('negative' if persistent else 'idle_negative') if kind == 'negative' else kind
+                if not self.start_idle_reaction(
+                        now, payload['expression'], payload.get('hold'), display_kind):
                     if kind == 'negative':
                         self.idle.finished('negative', now)
         blocked = (not self.autonomous or self.dragging or self.menu_active or self.canvas.sleeping or
@@ -743,6 +1061,25 @@ class PetWindow(QWidget):
                     self.move_content_to(QPoint(round(destination[0]), round(destination[1])))
                     self.mask_due = True
         self.was_blocked = blocked
+        if self.poke_debug:
+            lifecycle = (
+                self.canvas.expression, self.idle_kind, self.idle_expression,
+                self.reaction_expression, self.annoyance_count, self.canvas.sleeping)
+            if lifecycle != self._poke_debug_last_lifecycle:
+                expected = self._poke_debug_expected_expression
+                print('POKE_DEBUG_LIFECYCLE', json.dumps({
+                    'canvas_expression': self.canvas.expression,
+                    'idle_kind': self.idle_kind,
+                    'idle_expression': self.idle_expression,
+                    'reaction_expression': self.reaction_expression,
+                    'annoyance_level': self.annoyance_count,
+                    'sleeping': self.canvas.sleeping,
+                    'expected_poke_expression': expected,
+                    'poke_expression_overwritten': bool(
+                        expected and (self.canvas.expression != expected or
+                                      self.idle_expression != expected)),
+                }, ensure_ascii=False), flush=True)
+                self._poke_debug_last_lifecycle = lifecycle
 
     def apply_behavior(self):
         if self.canvas.sleeping:
@@ -860,7 +1197,25 @@ class PetWindow(QWidget):
         self.interrupt()
         self.save_timer.start()
 
+    def cancel_pointer_gesture(self):
+        had_pointer = self.pointer_pressed
+        self.pointer_pressed = False
+        self.pointer_press_global = None
+        self.pointer_press_local = None
+        self.pointer_press_on_silhouette = False
+        self.pointer_press_in_poke_region = False
+        if self.dragging:
+            self.end_drag()
+        elif had_pointer:
+            self.canvas.releaseMouse()
+            self.interrupt()
+            self.detector.block_for(
+                time.perf_counter(), self.profile['petting']['post_drag_seconds'])
+
     def open_menu(self, position):
+        # A context-menu event can arrive while the left-button grab is active.
+        # End that gesture without passing through the click/poke release path.
+        self.cancel_pointer_gesture()
         self.menu_active = True
         self.interrupt()
         self.cancel_reaction()

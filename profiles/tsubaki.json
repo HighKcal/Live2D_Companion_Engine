@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "id": "tsubaki",
-  "display_name": "椿",
+  "display_name": "카멜리아",
   "model": {
     "path": "models/4324b6eed3cf/runtime/model.model3.json"
   },
