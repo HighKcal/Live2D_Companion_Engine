@@ -1,0 +1,5 @@
+models/** export-ignore
+artifacts/** export-ignore
+research/** export-ignore
+.venv/** export-ignore
+local/** export-ignore

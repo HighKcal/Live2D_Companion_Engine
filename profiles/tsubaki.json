@@ -1,0 +1,189 @@
+{
+  "schema_version": 1,
+  "id": "tsubaki",
+  "display_name": "椿",
+  "model": {
+    "path": "models/4324b6eed3cf/runtime/model.model3.json"
+  },
+  "presentation": {
+    "scale": 0.74,
+    "window_aspect": 0.82,
+    "window_height_per_character_height": 1.43,
+    "render_window_scale": 2.0,
+    "bottom_offscreen_fraction": 0.65
+  },
+  "hit_areas": {
+    "head": {
+      "type": "rect",
+      "space": "model",
+      "rect": [
+        -0.17,
+        0.58,
+        0.17,
+        0.96
+      ]
+    }
+  },
+  "parameters": {
+    "eye_open_left": "ParamEyeLOpen",
+    "eye_open_right": "ParamEyeROpen",
+    "eye_gaze_x": "ParamEyeBallX",
+    "eye_gaze_y": "ParamEyeBallY",
+    "mouth_open": "ParamMouthOpenY",
+    "head_angle_x": "ParamAngleX",
+    "head_angle_y": "ParamAngleY",
+    "head_angle_z": "ParamAngleZ",
+    "body_angle_x": "ParamBodyAngleX",
+    "body_angle_y": "ParamBodyAngleY",
+    "body_angle_z": "ParamBodyAngleZ",
+    "breath": "ParamBreath",
+    "blush": "Button2",
+    "heart_eyes": "Button7"
+  },
+  "controls": [
+    {
+      "parameter": "eye_open_left",
+      "label": "왼쪽 눈"
+    },
+    {
+      "parameter": "eye_open_right",
+      "label": "오른쪽 눈"
+    },
+    {
+      "parameter": "eye_gaze_x",
+      "label": "시선 X"
+    },
+    {
+      "parameter": "eye_gaze_y",
+      "label": "시선 Y"
+    },
+    {
+      "parameter": "mouth_open",
+      "label": "입 벌림"
+    },
+    {
+      "parameter": "head_angle_x",
+      "label": "고개 좌우"
+    },
+    {
+      "parameter": "head_angle_y",
+      "label": "고개 위아래"
+    },
+    {
+      "parameter": "head_angle_z",
+      "label": "고개 기울기"
+    },
+    {
+      "parameter": "body_angle_x",
+      "label": "몸 좌우"
+    },
+    {
+      "parameter": "breath",
+      "label": "호흡"
+    }
+  ],
+  "expressions": {
+    "ambient": [
+      {
+        "asset": "EXP3/眼高光消失.exp3.json",
+        "weight": 1,
+        "purpose": "subtle_blank_look"
+      }
+    ],
+    "negative": [
+      {
+        "asset": "EXP3/黑脸.exp3.json",
+        "weight": 3,
+        "purpose": "quiet_pout"
+      },
+      {
+        "asset": "EXP3/哭.exp3.json",
+        "weight": 1,
+        "purpose": "sad_cry"
+      }
+    ],
+    "positive": [
+      {
+        "name": "blush_heart_eyes",
+        "asset": "EXP3/爱心眼.exp3.json",
+        "weight": 1,
+        "parameter_values": {
+          "blush": 1.0,
+          "heart_eyes": 1.0,
+          "head_angle_z": -4.0,
+          "head_angle_y": 3.0
+        }
+      }
+    ]
+  },
+  "motions": {},
+  "behavior": {
+    "rest_seconds": [
+      20,
+      60
+    ],
+    "relocation": {
+      "fade_out_seconds": [
+        0.35,
+        0.45
+      ],
+      "fade_in_seconds": [
+        0.45,
+        0.55
+      ],
+      "min_distance_character_fraction": 1.0,
+      "min_distance_screen_fraction": 0.18,
+      "destination_attempts": 24
+    },
+    "idle": {
+      "ambient": {
+        "interval_seconds": [
+          10,
+          25
+        ],
+        "probability": 0.65,
+        "hold_seconds": [
+          8,
+          12
+        ]
+      },
+      "major": {
+        "delay_seconds": [
+          60,
+          90
+        ],
+        "actions": [
+          {
+            "kind": "negative",
+            "weight": 1
+          },
+          {
+            "kind": "sleep",
+            "weight": 1
+          }
+        ]
+      },
+      "negative": {}
+    },
+    "petting": {
+      "stroke_fraction": 0.12,
+      "noise_fraction": 0.01,
+      "jump_fraction": 0.75,
+      "min_distance_fraction": 0.65,
+      "reversals": 3,
+      "window_seconds": 3.2,
+      "min_speed_widths_per_second": 0.08,
+      "max_speed_widths_per_second": 8.0,
+      "sample_interval_seconds": 0.008,
+      "inactivity_seconds": 0.55,
+      "cooldown_seconds": 2.0,
+      "post_drag_seconds": 0.4,
+      "attack_seconds": 0.35,
+      "positive_hold_seconds": [
+        3,
+        4
+      ],
+      "fade_seconds": 0.65
+    }
+  }
+}

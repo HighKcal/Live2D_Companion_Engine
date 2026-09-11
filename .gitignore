@@ -1,0 +1,71 @@
+# ==================================================
+# Live2D Character Model Assets (MUST NEVER BE COMMITTED)
+# Local model files remain on disk but excluded from Git
+# ==================================================
+models/
+**/original/
+**/runtime/
+*.moc3
+*.model3.json
+*.physics3.json
+*.cdi3.json
+*.exp3.json
+*.motion3.json
+*.vtube.json
+*.vbridger
+*.8192/
+*.4096/
+*.2048/
+
+# Archives and model asset packages
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# ==================================================
+# Python & Virtual Environments
+# ==================================================
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+
+# ==================================================
+# Local State, Logs & Generated Verifier Artifacts
+# ==================================================
+local/
+artifacts/
+research/
+*.log
+*.tmp
+*.temp
+
+# ==================================================
+# Secrets, Credentials & Local Environment Files
+# ==================================================
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+credentials.json
+secrets.json
+token.json
+
+# ==================================================
+# IDE & Operating System Files
+# ==================================================
+.vscode/
+.idea/
+*.suo
+*.user
+Thumbs.db
+Desktop.ini
+.DS_Store

@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "id": "icegirl",
+  "display_name": "IceGirl",
+  "model": {
+    "path": "models/a3e8788671ce/runtime/model.model3.json"
+  },
+  "presentation": {
+    "scale": 0.74,
+    "window_aspect": 0.9,
+    "window_height_per_character_height": 1.43,
+    "render_window_scale": 2.0,
+    "bottom_offscreen_fraction": 0.65
+  },
+  "hit_areas": {
+    "head": {
+      "type": "rect",
+      "space": "model",
+      "rect": [-0.13, 0.34, 0.13, 0.64]
+    }
+  },
+  "parameters": {
+    "eye_open_left": "ParamEyeLOpen",
+    "eye_open_right": "ParamEyeROpen",
+    "eye_smile_left": "ParamEyeLSmile",
+    "eye_smile_right": "ParamEyeRSmile",
+    "eye_gaze_x": "ParamEyeBallX",
+    "eye_gaze_y": "ParamEyeBallY",
+    "mouth_open": "ParamMouthOpenY",
+    "head_angle_x": "ParamAngleX",
+    "head_angle_y": "ParamAngleY",
+    "head_angle_z": "ParamAngleZ",
+    "body_angle_x": "ParamBodyAngleX",
+    "body_angle_y": "ParamBodyAngleY",
+    "body_angle_z": "ParamBodyAngleZ",
+    "breath": "ParamBreath",
+    "blush": "Param31",
+    "heart_eyes": "Param37",
+    "physics_head_bounce": "ParamHairFront"
+  },
+  "controls": [
+    {"parameter": "eye_open_left", "label": "왼쪽 눈"},
+    {"parameter": "eye_open_right", "label": "오른쪽 눈"},
+    {"parameter": "eye_gaze_x", "label": "시선 X"},
+    {"parameter": "eye_gaze_y", "label": "시선 Y"},
+    {"parameter": "mouth_open", "label": "입 벌림"},
+    {"parameter": "head_angle_x", "label": "고개 좌우"},
+    {"parameter": "head_angle_y", "label": "고개 위아래"},
+    {"parameter": "head_angle_z", "label": "고개 기울기"},
+    {"parameter": "body_angle_x", "label": "몸 좌우"},
+    {"parameter": "breath", "label": "호흡"}
+  ],
+  "expressions": {
+    "ambient": [
+      {"asset": "疑惑.exp3.json", "weight": 1, "purpose": "questioning"}
+    ],
+    "negative": [
+      {"asset": "生气.exp3.json", "weight": 3, "purpose": "mild_anger"},
+      {"asset": "脸黑.exp3.json", "weight": 1, "purpose": "strong_pout"}
+    ],
+    "positive": [
+      {
+        "name": "blush_heart_smile",
+        "asset": "脸红.exp3.json",
+        "weight": 1,
+        "parameter_values": {
+          "eye_open_left": 0.1,
+          "eye_open_right": 0.1,
+          "eye_smile_left": 1.0,
+          "eye_smile_right": 1.0,
+          "blush": 1.0,
+          "heart_eyes": 1.0,
+          "head_angle_z": -4.0,
+          "head_angle_y": 3.0
+        }
+      }
+    ]
+  },
+  "motions": {},
+  "behavior": {
+    "rest_seconds": [20, 60],
+    "relocation": {
+      "fade_out_seconds": [0.35, 0.45],
+      "fade_in_seconds": [0.45, 0.55],
+      "min_distance_character_fraction": 1.0,
+      "min_distance_screen_fraction": 0.18,
+      "destination_attempts": 24
+    },
+    "idle": {
+      "ambient": {
+        "interval_seconds": [10, 25],
+        "probability": 0.65,
+        "hold_seconds": [8, 12]
+      },
+      "major": {
+        "delay_seconds": [60, 90],
+        "actions": [
+          {"kind": "negative", "weight": 1},
+          {"kind": "sleep", "weight": 1}
+        ]
+      },
+      "negative": {}
+    },
+    "petting": {
+      "stroke_fraction": 0.12,
+      "noise_fraction": 0.01,
+      "jump_fraction": 0.75,
+      "min_distance_fraction": 0.65,
+      "reversals": 3,
+      "window_seconds": 3.2,
+      "min_speed_widths_per_second": 0.08,
+      "max_speed_widths_per_second": 8.0,
+      "sample_interval_seconds": 0.008,
+      "inactivity_seconds": 0.55,
+      "cooldown_seconds": 2.0,
+      "post_drag_seconds": 0.4,
+      "attack_seconds": 0.35,
+      "positive_hold_seconds": [3, 4],
+      "fade_seconds": 0.65
+    },
+    "poke": {
+      "reset_seconds": 15.0,
+      "max_click_seconds": 0.5,
+      "drag_threshold_pixels": 8.0,
+      "reactions": [
+        {"threshold": 2, "asset": "疑惑.exp3.json", "hold_seconds": [1.2, 1.8]},
+        {"threshold": 4, "asset": "白眼.exp3.json", "hold_seconds": [1.2, 1.8]},
+        {"threshold": 6, "asset": "生气.exp3.json", "hold_seconds": [1.2, 1.8]},
+        {"threshold": 8, "asset": "脸黑.exp3.json", "persistent_negative": true}
+      ]
+    }
+  }
+}
