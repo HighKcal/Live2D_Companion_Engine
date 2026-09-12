@@ -108,6 +108,11 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(icegirl.runtime_file('MeiYan.motion3.json', 'motion'),
                          'motion_02.motion3.json')
         self.assertIsNone(icegirl.motion_asset('sleep'))
+        self.assertEqual(icegirl.motion_asset('greeting'), 'HuiShou.motion3.json')
+        self.assertEqual(icegirl.motion_duration('greeting'), 7.0)
+        self.assertEqual(icegirl.motion_cleanup_duration('greeting'), 0.35)
+        self.assertIsNone(registry.get('hibana').motion_asset('greeting'))
+        self.assertIsNone(registry.get('tsubaki').motion_asset('greeting'))
         self.assertEqual(icegirl.behavior_settings()['idle']['major']['actions'],
                          [{'kind': 'negative', 'weight': 1}])
         self.assertEqual(icegirl.behavior_settings()['head_rect_model'],
@@ -135,6 +140,9 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(
             icegirl.behavior['poke']['completion']['asset'],
             '爱心眼.exp3.json')
+        self.assertEqual(
+            icegirl.behavior['poke']['completion']['parameter_values'],
+            {'head_angle_z': -4.0, 'head_angle_y': 3.0})
         self.assertEqual(
             [item['asset'] for item in icegirl.expression_candidates('negative')],
             ['生气.exp3.json'])
@@ -196,6 +204,17 @@ class ProfileTests(unittest.TestCase):
         data['behavior']['poke']['interaction_region'] = 'poke_chest'
         data['behavior']['poke']['reconciliation'][0]['asset'] = 'missing.exp3.json'
         with self.assertRaisesRegex(ProfileError, 'unknown poke reconciliation'):
+            ModelProfile(self.write_profile(data=data), self.root)
+
+    def test_motion_duration_is_validated(self):
+        data = self.profile_data()
+        data['motions']['greeting'] = {
+            'asset': 'Motions/sleep.motion3.json', 'duration_seconds': 0}
+        with self.assertRaisesRegex(ProfileError, 'duration_seconds'):
+            ModelProfile(self.write_profile(data=data), self.root)
+        data['motions']['greeting']['duration_seconds'] = 1
+        data['motions']['greeting']['cleanup_seconds'] = -0.1
+        with self.assertRaisesRegex(ProfileError, 'cleanup_seconds'):
             ModelProfile(self.write_profile(data=data), self.root)
 
     def test_missing_capabilities_are_valid(self):

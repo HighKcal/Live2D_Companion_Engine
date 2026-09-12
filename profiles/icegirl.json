@@ -128,7 +128,14 @@
       }
     ]
   },
-  "motions": {},
+  "motions": {
+    "greeting": {
+      "asset": "HuiShou.motion3.json",
+      "duration_seconds": 7.0,
+      "priority": 3,
+      "cleanup_seconds": 0.35
+    }
+  },
   "behavior": {
     "rest_seconds": [
       20,
@@ -258,7 +265,11 @@
       ],
       "completion": {
         "asset": "爱心眼.exp3.json",
-        "role": "reconciled"
+        "role": "reconciled",
+        "parameter_values": {
+          "head_angle_z": -4.0,
+          "head_angle_y": 3.0
+        }
       }
     }
   }

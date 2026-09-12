@@ -33,6 +33,9 @@ class Canvas(QOpenGLWidget):
         self.assets = self.profile.assets
         self.expression_indexes = {}
         self.motion_indexes = {}
+        self.motion_parameter_ids = {}
+        self.motion_baseline_values = {}
+        self.motion_cleanup = None
         self.model = None
         self.params = {}
         self.values = {}
@@ -75,10 +78,16 @@ class Canvas(QOpenGLWidget):
                 self.expression_indexes[self.profile.asset_identifier(e)] = i
                 self.expression_params.update(v['Id'] for v in json.loads(p.read_text(encoding='utf-8-sig'))['Parameters'])
             for motion in self.assets['motions']:
-                result = self.model.LoadExtraMotion('ProfileMotions', str(self.path.parent / motion['file']))
+                motion_path = self.path.parent / motion['file']
+                result = self.model.LoadExtraMotion('ProfileMotions', str(motion_path))
                 if result < 0:
                     raise RuntimeError(f'Motion load failed: {motion["file"]}')
-                self.motion_indexes[self.profile.asset_identifier(motion)] = result
+                identifier = self.profile.asset_identifier(motion)
+                self.motion_indexes[identifier] = result
+                motion_data = json.loads(motion_path.read_text(encoding='utf-8-sig'))
+                self.motion_parameter_ids[identifier] = {
+                    curve['Id'] for curve in motion_data.get('Curves', [])
+                    if curve.get('Target') == 'Parameter' and curve.get('Id') in self.params}
             self.model.Resize(self.width(), self.height())
             self.context().aboutToBeDestroyed.connect(self.cleanup)
             self.timer.start()
@@ -113,19 +122,78 @@ class Canvas(QOpenGLWidget):
         if index is not None:
             self.model.SetExpression(f'exp{index}')
 
+    def start_motion(self, semantic, priority=None):
+        if not self.model or self.sleeping:
+            return False
+        asset = self.profile.motion_asset(semantic)
+        index = self.motion_indexes.get(asset)
+        if index is None:
+            return False
+        action = self.profile.motion_actions.get(semantic, {})
+        priority = action.get('priority', 3) if priority is None else priority
+        self.motion_cleanup = None
+        self.motion_baseline_values = {
+            pid: self.model.GetParameterValue(self.params[pid]['index'])
+            for pid in self.motion_parameter_ids.get(asset, ())}
+        self.model.StopAllMotions()
+        self.model.StartMotion('ProfileMotions', index, priority)
+        return True
+
+    def stop_motion(self, cleanup_seconds=0.0):
+        if not self.model:
+            return False
+        self.model.StopAllMotions()
+        if self.motion_baseline_values:
+            current = {
+                pid: self.model.GetParameterValue(self.params[pid]['index'])
+                for pid in self.motion_baseline_values}
+            if cleanup_seconds > 0:
+                self.motion_cleanup = {
+                    'started': time.monotonic(),
+                    'duration': cleanup_seconds,
+                    'from': current,
+                    'to': dict(self.motion_baseline_values),
+                }
+            else:
+                for pid, value in self.motion_baseline_values.items():
+                    self.set_param(pid, value)
+                self.motion_cleanup = None
+                self.motion_baseline_values = {}
+        return True
+
+    def motion_cleanup_active(self):
+        return self.motion_cleanup is not None
+
+    def apply_motion_cleanup(self):
+        cleanup = self.motion_cleanup
+        if cleanup is None:
+            return
+        progress = min(1.0, max(
+            0.0, (time.monotonic() - cleanup['started']) / cleanup['duration']))
+        blend = progress * progress * (3.0 - 2.0 * progress)
+        for pid, start in cleanup['from'].items():
+            end = cleanup['to'][pid]
+            self.set_param(pid, start + (end - start) * blend)
+        if progress >= 1.0:
+            self.motion_cleanup = None
+            self.motion_baseline_values = {}
+
     def sleep(self):
         if not self.model:
             return False
         asset = self.profile.motion_asset('sleep')
-        index = self.motion_indexes.get(asset)
-        if index is None:
+        if asset not in self.motion_indexes:
             return False
-        self.model.StopAllMotions()
+        self.motion_cleanup = None
+        self.motion_baseline_values = {}
         self.model.ResetExpressions()
         self.reset_parameters()
         self.sleeping = True
+        # start_motion rejects sleeping canvases, so start the validated sleep
+        # asset directly after entering the sleep render mode.
+        self.model.StopAllMotions()
         priority = self.profile.motion_actions['sleep'].get('priority', 3)
-        self.model.StartMotion('ProfileMotions', index, priority)
+        self.model.StartMotion('ProfileMotions', self.motion_indexes[asset], priority)
         self.state_changed.emit()
         return True
 
@@ -133,6 +201,8 @@ class Canvas(QOpenGLWidget):
         if not self.model:
             return
         self.model.StopAllMotions()
+        self.motion_cleanup = None
+        self.motion_baseline_values = {}
         self.model.ResetExpressions()
         self.reset_parameters()
         self.sleeping = False
@@ -174,6 +244,7 @@ class Canvas(QOpenGLWidget):
                     p = self.params[breath]
                     self.set_param(breath, p['min'] + (0.5 + 0.5 * math.sin(elapsed * 1.7)) * (p['max'] - p['min']))
             self.apply_behavior()
+            self.apply_motion_cleanup()
             # Native Update evaluates motions, expressions, physics and pose, then mesh vertices.
             self.model.Update()
             self.model.Draw()

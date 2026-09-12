@@ -95,6 +95,20 @@ class ModelProfile:
                 raise ProfileError(f'{self.path.name}.motions.{semantic} needs an asset')
             if item['asset'] not in self.motions:
                 raise ProfileError(f'{self.path.name}: unknown motion asset {item["asset"]}')
+            duration = item.get('duration_seconds')
+            if (duration is not None and
+                    (not isinstance(duration, (int, float)) or
+                     isinstance(duration, bool) or duration <= 0)):
+                raise ProfileError(
+                    f'{self.path.name}.motions.{semantic}.duration_seconds '
+                    'must be positive')
+            cleanup = item.get('cleanup_seconds')
+            if (cleanup is not None and
+                    (not isinstance(cleanup, (int, float)) or
+                     isinstance(cleanup, bool) or cleanup < 0)):
+                raise ProfileError(
+                    f'{self.path.name}.motions.{semantic}.cleanup_seconds '
+                    'must be non-negative')
         head = self.hit_areas.get('head')
         if not isinstance(head, dict) or head.get('type') != 'rect':
             raise ProfileError(f'{self.path.name}.hit_areas.head must be a rect')
@@ -245,6 +259,16 @@ class ModelProfile:
     def motion_asset(self, semantic):
         item = self.motion_actions.get(semantic)
         return item.get('asset') if isinstance(item, dict) else None
+
+    def motion_duration(self, semantic):
+        item = self.motion_actions.get(semantic)
+        duration = item.get('duration_seconds') if isinstance(item, dict) else None
+        return float(duration) if isinstance(duration, (int, float)) and duration > 0 else None
+
+    def motion_cleanup_duration(self, semantic):
+        item = self.motion_actions.get(semantic)
+        cleanup = item.get('cleanup_seconds', 0) if isinstance(item, dict) else 0
+        return float(cleanup) if isinstance(cleanup, (int, float)) and cleanup >= 0 else 0.0
 
     def behavior_settings(self):
         settings = deepcopy(self.behavior)

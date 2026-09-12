@@ -239,6 +239,11 @@ class PokeProbe:
             assert '爱心眼.exp3.json' not in selected
             QTest.qWait(450)
             assert w.reaction_level > .9
+            head_z = w.model_profile.parameter_id('head_angle_z')
+            head_y = w.model_profile.parameter_id('head_angle_y')
+            petting_pose = {
+                pid: w.canvas.model.GetParameterValue(w.canvas.params[pid]['index'])
+                for pid in (head_z, head_y)}
             w.tick()
             assert w.annoyance_reconciliation_index == 3
             assert w.reaction_expression == baseline
@@ -256,7 +261,16 @@ class PokeProbe:
             assert w.canvas.expression == '爱心眼.exp3.json'
             assert selected == ['爱心眼.exp3.json'], selected
             assert heart not in w.reaction_values
-            QTest.qWait(450)
+            assert w.reaction_level > .9
+            assert w.reaction_values[head_z] == -4.0
+            assert w.reaction_values[head_y] == 3.0
+            QTest.qWait(50)
+            completion_pose = {
+                pid: w.canvas.model.GetParameterValue(w.canvas.params[pid]['index'])
+                for pid in (head_z, head_y)}
+            assert all(abs(completion_pose[pid] - petting_pose[pid]) < .75
+                       for pid in (head_z, head_y)), (petting_pose, completion_pose)
+            QTest.qWait(400)
             assert w.reaction_level > .9
             w.canvas.grabFramebuffer().save(str(self.out / 'positive-recovery.png'))
             self.checks.append('only fifth reconciliation petting selects 爱心眼')

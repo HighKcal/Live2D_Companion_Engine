@@ -146,6 +146,7 @@ class PetCanvas(Canvas):
     def sleep(self, automatic=False):
         if self.profile.motion_asset('sleep') not in self.motion_indexes:
             return False
+        self.owner.stop_active_motion()
         self.owner.cancel_reaction()
         self.owner.cancel_idle_reaction(include_negative=True)
         if not automatic:
@@ -206,6 +207,9 @@ class PetWindow(QWidget):
         self.pointer_press_on_silhouette = False
         self.pointer_press_in_poke_region = False
         self.menu_active = False
+        self.active_motion_kind = None
+        self.active_motion_deadline = 0.0
+        self.greeting_pending = False
         self.autonomous = True
         self.character_height = SIZE_POLICY['default']
         self.panel = None
@@ -430,7 +434,9 @@ class PetWindow(QWidget):
                 completion.get('parameter_values', {}), self.canvas.params)
             self.reconciliation_completion = {
                 'values': values,
-                'expression': completion.get('asset') if not values else None}
+                # Completion may combine its expression with pose parameters
+                # carried by the preceding persistent petting response.
+                'expression': completion.get('asset')}
             if missing:
                 print('PROFILE optional reconciliation completion parameters unavailable: '
                       + ', '.join(missing), flush=True)
@@ -599,8 +605,8 @@ class PetWindow(QWidget):
         poke = self.profile.get('poke')
         max_seconds = poke.get('max_click_seconds', .5) if poke else .5
         valid_click = bool(
-            not was_dragging and press_hit and release_hit and
-            elapsed <= max_seconds)
+            not was_dragging and self.active_motion_kind is None and
+            press_hit and release_hit and elapsed <= max_seconds)
         attempted_expression = None
         if valid_click and poke:
             level = min(before + 1, len(poke['levels']))
@@ -642,6 +648,7 @@ class PetWindow(QWidget):
             self.poke_debug_overlay.update()
 
     def begin_drag(self, global_pos):
+        self.stop_active_motion()
         self.note_interaction()
         self.dragging = True
         self.drag_offset = global_pos - QPointF(self.pos())
@@ -701,7 +708,8 @@ class PetWindow(QWidget):
     def hover(self, position, buttons):
         if self.relocator.active:
             self.cancel_relocation(time.monotonic())
-        if not self.canvas.model or self.canvas.sleeping or self.dragging or self.menu_active:
+        if (not self.canvas.model or self.canvas.sleeping or self.dragging or
+                self.menu_active or self.active_motion_kind is not None):
             self.detector.reset()
             return
         model_point = self.to_model(position)
@@ -733,7 +741,8 @@ class PetWindow(QWidget):
         return float(vec[0] / vec[3]), float(vec[1] / vec[3])
 
     def start_reaction(self, now):
-        if self.canvas.sleeping or self.dragging or self.menu_active:
+        if (self.canvas.sleeping or self.dragging or self.menu_active or
+                self.active_motion_kind is not None):
             return
         if (self.annoyance_count > 0 or
                 self.annoyance_reconciliation_index is not None):
@@ -879,14 +888,18 @@ class PetWindow(QWidget):
         baseline = self.annoyance_base_expression
         self.cancel_idle_reaction(
             restore=False, reschedule=False, now=now, include_negative=True)
-        if self.reaction_expression is not None or self.reaction_level > 0:
-            self.cancel_reaction(restore=False)
+        continuing_parameter_reaction = self.reaction_expression is not None
         completion = self.reconciliation_completion
-        self.reset_annoyance()
         if completion is None:
+            if continuing_parameter_reaction or self.reaction_level > 0:
+                self.cancel_reaction(restore=False)
+            self.reset_annoyance()
             self.start_positive_reaction(
                 now, previous_expression=baseline, recovered_negative=True)
             return
+        if not continuing_parameter_reaction and self.reaction_level > 0:
+            self.cancel_reaction(restore=False)
+        self.reset_annoyance()
         self.reaction_expression = baseline
         self.reaction_values = completion['values']
         self.canvas.model.ResetExpressions()
@@ -1000,6 +1013,9 @@ class PetWindow(QWidget):
 
     def tick(self):
         now = time.monotonic()
+        if (self.active_motion_kind is not None and
+                now >= self.active_motion_deadline):
+            self.stop_active_motion(now)
         dt = min(.1, now - self.last_tick)
         self.last_tick = now
         was_petting = self.detector.active
@@ -1018,7 +1034,9 @@ class PetWindow(QWidget):
         if self.idle_kind in ('ambient', 'idle_negative') and now >= self.idle_until:
             self.cancel_idle_reaction(include_negative=True)
             self.cancel_relocation(now)
-        idle_blocked = (self.dragging or self.menu_active or self.canvas.sleeping or self.detector.active or
+        idle_blocked = (self.dragging or self.menu_active or self.canvas.sleeping or
+                        self.active_motion_kind is not None or
+                        self.canvas.motion_cleanup_active() or self.detector.active or
                         self.reaction_expression is not None or self.reaction_level > 0 or
                         self.idle_expression is not None or self.relocator.active or
                         (self.panel is not None and self.panel.isVisible()))
@@ -1039,7 +1057,9 @@ class PetWindow(QWidget):
                     if kind == 'negative':
                         self.idle.finished('negative', now)
         blocked = (not self.autonomous or self.dragging or self.menu_active or self.canvas.sleeping or
-                   self.detector.active or self.reaction_level > 0 or self.idle_expression is not None or
+                   self.active_motion_kind is not None or self.canvas.motion_cleanup_active() or
+                   self.detector.active or
+                   self.reaction_level > 0 or self.idle_expression is not None or
                    self.pointer_over_interactive_area() or
                    (self.panel is not None and self.panel.isVisible()))
         if blocked:
@@ -1129,6 +1149,67 @@ class PetWindow(QWidget):
         self.pending_character_height = None
         self.resize_character(height)
 
+    def persistent_negative_active(self):
+        if self.idle_kind == 'negative':
+            return True
+        poke = self.profile.get('poke') or {}
+        levels = poke.get('levels', [])
+        return bool(
+            levels and self.annoyance_count >= len(levels) and
+            levels[-1].get('persistent_negative', False))
+
+    def greeting_supported(self):
+        asset = self.model_profile.motion_asset('greeting')
+        return bool(
+            self.canvas.model and asset in self.canvas.motion_indexes and
+            self.model_profile.motion_duration('greeting') is not None)
+
+    def greeting_enabled(self):
+        return bool(
+            self.greeting_supported() and not self.canvas.sleeping and
+            self.active_motion_kind is None and
+            not self.canvas.motion_cleanup_active() and
+            not self.persistent_negative_active())
+
+    def request_greeting(self):
+        self.greeting_pending = True
+        QTimer.singleShot(0, self.dispatch_pending_greeting)
+
+    def dispatch_pending_greeting(self):
+        if self.menu_active or not self.greeting_pending:
+            return False
+        self.greeting_pending = False
+        return self.start_greeting()
+
+    def start_greeting(self, now=None):
+        if not self.greeting_enabled() or self.menu_active:
+            return False
+        now = time.monotonic() if now is None else now
+        if not self.canvas.start_motion('greeting'):
+            return False
+        self.active_motion_kind = 'greeting'
+        self.active_motion_deadline = (
+            now + self.model_profile.motion_duration('greeting'))
+        self.idle.interact(now)
+        self.cancel_relocation(now)
+        self.detector.reset()
+        print(f'USER_MOTION kind=greeting started deadline={self.active_motion_deadline:.3f}',
+              flush=True)
+        return True
+
+    def stop_active_motion(self, now=None):
+        if self.active_motion_kind is None:
+            return False
+        kind = self.active_motion_kind
+        cleanup = self.model_profile.motion_cleanup_duration(kind)
+        self.canvas.stop_motion(cleanup)
+        self.active_motion_kind = None
+        self.active_motion_deadline = 0.0
+        now = time.monotonic() if now is None else now
+        self.relocator.pause(now)
+        print(f'USER_MOTION kind={kind} stopped', flush=True)
+        return True
+
     def build_menu(self):
         menu = QMenu(self)
         characters = menu.addMenu('캐릭터')
@@ -1171,6 +1252,10 @@ class PetWindow(QWidget):
         sleep.setEnabled(self.canvas.model is not None and
                          self.model_profile.motion_asset('sleep') in self.canvas.motion_indexes)
         sleep.triggered.connect(self.canvas.wake if self.canvas.sleeping else self.canvas.sleep)
+        greeting = menu.addAction('인사하기')
+        greeting.setEnabled(self.greeting_enabled())
+        greeting.triggered.connect(self.request_greeting)
+        menu._greeting_action = greeting
         menu.addAction('개발용 제어판', self.open_panel)
         menu.addSeparator()
         menu.addAction('종료', self.close)
@@ -1218,8 +1303,9 @@ class PetWindow(QWidget):
         self.cancel_pointer_gesture()
         self.menu_active = True
         self.interrupt()
-        self.cancel_reaction()
-        self.cancel_idle_reaction()
+        # Menu actions that change model state (for example sleep) own their
+        # cleanup. Opening the menu alone must not erase the face expression
+        # that a user motion such as greeting is meant to preserve.
         menu = self.build_menu()
         try:
             menu.exec(position)
@@ -1227,6 +1313,8 @@ class PetWindow(QWidget):
             self.menu_active = False
             self.interrupt()
             menu.deleteLater()
+            if self.greeting_pending:
+                QTimer.singleShot(0, self.dispatch_pending_greeting)
 
     def create_tray(self):
         pixmap = QPixmap(32, 32)
