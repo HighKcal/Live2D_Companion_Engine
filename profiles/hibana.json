@@ -117,6 +117,21 @@
       "attack_seconds": 0.35,
       "positive_hold_seconds": [3, 4],
       "fade_seconds": 0.65
+    },
+    "feeding": {
+      "food_asset": "assets/food/cookie.png",
+      "mouth_target_model": [0.0, -0.046],
+      "food_size_character_fraction": 0.04,
+      "start_offset_character_fraction": [0.32, 0.08],
+      "mouth_open_value": 0.85,
+      "approach_seconds": 0.65,
+      "close_seconds": 1.65,
+      "satisfaction_seconds": 2.1,
+      "reactions": {
+        "anticipation": {"asset": "Expressions/11 要饭.exp3.json"},
+        "eating": {"asset": "Expressions/05 ＞＜.exp3.json"},
+        "satisfaction": {"asset": "Expressions/02 脸红爱心.exp3.json"}
+      }
     }
   }
 }

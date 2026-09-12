@@ -113,6 +113,11 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(icegirl.motion_cleanup_duration('greeting'), 0.35)
         self.assertIsNone(registry.get('hibana').motion_asset('greeting'))
         self.assertIsNone(registry.get('tsubaki').motion_asset('greeting'))
+        for profile_id in ('hibana', 'tsubaki', 'icegirl'):
+            profile = registry.get(profile_id)
+            self.assertEqual(profile.behavior['feeding']['food_asset'],
+                             'assets/food/cookie.png')
+            self.assertTrue(profile.feeding_food_path().is_file())
         self.assertEqual(icegirl.behavior_settings()['idle']['major']['actions'],
                          [{'kind': 'negative', 'weight': 1}])
         self.assertEqual(icegirl.behavior_settings()['head_rect_model'],
@@ -215,6 +220,34 @@ class ProfileTests(unittest.TestCase):
         data['motions']['greeting']['duration_seconds'] = 1
         data['motions']['greeting']['cleanup_seconds'] = -0.1
         with self.assertRaisesRegex(ProfileError, 'cleanup_seconds'):
+            ModelProfile(self.write_profile(data=data), self.root)
+
+
+    def test_feeding_profile_is_validated(self):
+        data = self.profile_data()
+        data['parameters']['mouth_open'] = 'MouthOpen'
+        data['behavior']['feeding'] = {
+            'food_asset': 'missing-cookie.png',
+            'mouth_target_model': [0, 0],
+            'food_size_character_fraction': .16,
+            'start_offset_character_fraction': [.3, .1],
+            'mouth_open_value': .85,
+            'approach_seconds': .6,
+            'close_seconds': .5,
+            'satisfaction_seconds': 2,
+            'reactions': {},
+        }
+        with self.assertRaisesRegex(ProfileError, 'existing project asset'):
+            ModelProfile(self.write_profile(data=data), self.root)
+        food = self.root / 'cookie.png'
+        food.write_bytes(b'png')
+        data['behavior']['feeding']['food_asset'] = 'cookie.png'
+        data['behavior']['feeding']['mouth_target_model'] = [0]
+        with self.assertRaisesRegex(ProfileError, 'mouth_target_model'):
+            ModelProfile(self.write_profile(data=data), self.root)
+        data['behavior']['feeding']['mouth_target_model'] = [0, 0]
+        data['behavior']['feeding']['approach_seconds'] = 0
+        with self.assertRaisesRegex(ProfileError, 'approach_seconds'):
             ModelProfile(self.write_profile(data=data), self.root)
 
     def test_missing_capabilities_are_valid(self):

@@ -271,6 +271,30 @@
           "head_angle_y": 3.0
         }
       }
+    },
+    "feeding": {
+      "food_asset": "assets/food/cookie.png",
+      "mouth_target_model": [
+        0.0,
+        0.405
+      ],
+      "food_size_character_fraction": 0.04,
+      "start_offset_character_fraction": [
+        0.32,
+        0.08
+      ],
+      "mouth_open_value": 0.85,
+      "approach_seconds": 0.65,
+      "close_seconds": 1.65,
+      "satisfaction_seconds": 2.1,
+      "reactions": {
+        "anticipation": {
+          "asset": "星星眼.exp3.json"
+        },
+        "satisfaction": {
+          "asset": "脸红.exp3.json"
+        }
+      }
     }
   }
 }

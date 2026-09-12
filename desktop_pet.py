@@ -8,7 +8,7 @@ import time
 
 import numpy as np
 from OpenGL.GL import glReadPixels, GL_RGBA, GL_UNSIGNED_BYTE
-from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QSize, QProcess, QTimer
+from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QProcess, QTimer
 from PySide6.QtGui import (QIcon, QPixmap, QPainter, QPen, QColor, QImage, QBitmap,
                            QRegion, QCursor, QTransform)
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QMenu,
@@ -73,6 +73,64 @@ class PokeDebugOverlay(QWidget):
             painter.setBrush(QColor(80, 160, 255, 210))
             painter.setPen(QPen(QColor(255, 255, 255), 1))
             painter.drawEllipse(self.owner.debug_release_point, 5, 5)
+        painter.end()
+
+
+class FoodOverlay(QWidget):
+    """Input-transparent child overlay used for the short feeding interaction."""
+    def __init__(self, canvas, owner, asset_path):
+        # A direct PetWindow child is composited above QOpenGLWidget. A canvas
+        # child can be hidden behind the GL composition layer on Windows.
+        super().__init__(owner)
+        self.owner = owner
+        self.canvas = canvas
+        self.pixmap = QPixmap(str(asset_path))
+        self.food_rect = QRectF()
+        self.path_rect = QRect()
+        self.start_center = QPointF()
+        self.target_center = QPointF()
+        self.food_size = 1
+        self.active = False
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setGeometry(QRect(owner._content_offset, canvas.size()))
+        self.show()
+
+    def configure(self, start_center, target_center, size):
+        self.start_center = QPointF(start_center)
+        self.target_center = QPointF(target_center)
+        self.food_size = max(1, int(size))
+        half = self.food_size / 2
+        start = QRectF(self.start_center.x() - half, self.start_center.y() - half,
+                       self.food_size, self.food_size)
+        target = QRectF(self.target_center.x() - half, self.target_center.y() - half,
+                        self.food_size, self.food_size)
+        self.path_rect = start.united(target).adjusted(-2, -2, 2, 2).toAlignedRect()
+        self.active = True
+        self.set_progress(0.0)
+        self.raise_()
+
+    def set_progress(self, progress):
+        progress = smooth(max(0.0, min(1.0, progress)))
+        center = self.start_center * (1.0 - progress) + self.target_center * progress
+        half = self.food_size / 2
+        self.food_rect = QRectF(center.x() - half, center.y() - half,
+                                self.food_size, self.food_size)
+        self.update()
+
+    def hide_food(self):
+        self.active = False
+        self.food_rect = QRectF()
+        self.path_rect = QRect()
+        self.update()
+
+    def paintEvent(self, event):
+        if not self.active or self.pixmap.isNull() or self.food_rect.isEmpty():
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.drawPixmap(self.food_rect.toAlignedRect(), self.pixmap)
         painter.end()
 
 
@@ -142,10 +200,15 @@ class PetCanvas(Canvas):
             overlay.setGeometry(self.rect())
             overlay.raise_()
             overlay.update()
+        food = getattr(self.owner, 'food_overlay', None)
+        if food is not None:
+            food.setGeometry(QRect(self.owner._content_offset, self.size()))
+            food.raise_()
 
     def sleep(self, automatic=False):
         if self.profile.motion_asset('sleep') not in self.motion_indexes:
             return False
+        self.owner.cancel_feeding(restore_expression=False)
         self.owner.stop_active_motion()
         self.owner.cancel_reaction()
         self.owner.cancel_idle_reaction(include_negative=True)
@@ -210,6 +273,17 @@ class PetWindow(QWidget):
         self.active_motion_kind = None
         self.active_motion_deadline = 0.0
         self.greeting_pending = False
+        self.feeding_pending = False
+        self.feeding_active = False
+        self.feeding_started = 0.0
+        self.feeding_stage = None
+        self.feeding_mouth_pid = None
+        self.feeding_mouth_baseline = 0.0
+        self.feeding_mouth_value = 0.0
+        self.feeding_previous_expression = None
+        self.feeding_reactions = {}
+        self.food_overlay = None
+        self._character_input_region = QRegion()
         self.autonomous = True
         self.character_height = SIZE_POLICY['default']
         self.panel = None
@@ -441,6 +515,17 @@ class PetWindow(QWidget):
                 print('PROFILE optional reconciliation completion parameters unavailable: '
                       + ', '.join(missing), flush=True)
         self.reaction_values = self.positive_reactions[0]['values'] if self.positive_reactions else {}
+        feeding = self.profile.get('feeding')
+        if feeding:
+            self.feeding_reactions = {
+                role: item.get('asset') for role, item in feeding.get('reactions', {}).items()
+                if isinstance(item, dict) and item.get('asset') in self.canvas.expression_indexes}
+            food_path = self.model_profile.feeding_food_path()
+            if food_path is not None:
+                self.food_overlay = FoodOverlay(self.canvas, self, food_path)
+                if self.food_overlay.pixmap.isNull():
+                    self.food_overlay.deleteLater()
+                    self.food_overlay = None
         self.mask_timer.start()
         if self.poke_debug_overlay is not None:
             self.poke_debug_overlay.setGeometry(self.canvas.rect())
@@ -488,6 +573,16 @@ class PetWindow(QWidget):
         self._input_region_size = QSize(self.canvas.size())
         self.apply_input_region(region)
 
+    def project_model_point(self, point):
+        if not self.canvas.model or not point:
+            return None
+        matrix = np.array(self.canvas.model._model.GetMvp()).reshape((4, 4), order='F')
+        clip = matrix @ np.array([point[0], point[1], 0, 1])
+        if clip[3] == 0:
+            return None
+        return QPointF((clip[0] / clip[3] + 1) * self.canvas.width() / 2,
+                       (1 - clip[1] / clip[3]) * self.canvas.height() / 2)
+
     def project_model_rect(self, rect):
         if not self.canvas.model or not rect:
             return QRect()
@@ -511,9 +606,19 @@ class PetWindow(QWidget):
         return QRegion(self.project_model_rect(self.profile['head_rect_model']))
 
     def apply_input_region(self, content_region):
-        region = content_region.united(self.head_input_region()).translated(self._content_offset)
+        self._character_input_region = content_region.united(
+            self.head_input_region()).translated(self._content_offset)
+        self.refresh_feeding_input_region()
+
+    def refresh_feeding_input_region(self):
+        region = QRegion(self._character_input_region)
+        if (self.feeding_active and self.food_overlay is not None and
+                not self.food_overlay.path_rect.isEmpty()):
+            region = region.united(QRegion(
+                self.food_overlay.path_rect.translated(self._content_offset)))
         if region != self.mask():
-            QTimer.singleShot(0, lambda r=region: self.setMask(r) if not self.closed else None)
+            QTimer.singleShot(
+                0, lambda r=region: self.setMask(r) if not self.closed else None)
 
     def refresh_scaled_input_region(self):
         if self._input_region is not None:
@@ -606,6 +711,7 @@ class PetWindow(QWidget):
         max_seconds = poke.get('max_click_seconds', .5) if poke else .5
         valid_click = bool(
             not was_dragging and self.active_motion_kind is None and
+            not self.feeding_active and
             press_hit and release_hit and elapsed <= max_seconds)
         attempted_expression = None
         if valid_click and poke:
@@ -648,6 +754,7 @@ class PetWindow(QWidget):
             self.poke_debug_overlay.update()
 
     def begin_drag(self, global_pos):
+        self.cancel_feeding()
         self.stop_active_motion()
         self.note_interaction()
         self.dragging = True
@@ -709,7 +816,8 @@ class PetWindow(QWidget):
         if self.relocator.active:
             self.cancel_relocation(time.monotonic())
         if (not self.canvas.model or self.canvas.sleeping or self.dragging or
-                self.menu_active or self.active_motion_kind is not None):
+                self.menu_active or self.active_motion_kind is not None or
+                self.feeding_active):
             self.detector.reset()
             return
         model_point = self.to_model(position)
@@ -742,7 +850,7 @@ class PetWindow(QWidget):
 
     def start_reaction(self, now):
         if (self.canvas.sleeping or self.dragging or self.menu_active or
-                self.active_motion_kind is not None):
+                self.active_motion_kind is not None or self.feeding_active):
             return
         if (self.annoyance_count > 0 or
                 self.annoyance_reconciliation_index is not None):
@@ -1013,6 +1121,8 @@ class PetWindow(QWidget):
 
     def tick(self):
         now = time.monotonic()
+        if self.feeding_active:
+            self.update_feeding(now)
         if (self.active_motion_kind is not None and
                 now >= self.active_motion_deadline):
             self.stop_active_motion(now)
@@ -1035,7 +1145,7 @@ class PetWindow(QWidget):
             self.cancel_idle_reaction(include_negative=True)
             self.cancel_relocation(now)
         idle_blocked = (self.dragging or self.menu_active or self.canvas.sleeping or
-                        self.active_motion_kind is not None or
+                        self.feeding_active or self.active_motion_kind is not None or
                         self.canvas.motion_cleanup_active() or self.detector.active or
                         self.reaction_expression is not None or self.reaction_level > 0 or
                         self.idle_expression is not None or self.relocator.active or
@@ -1057,7 +1167,8 @@ class PetWindow(QWidget):
                     if kind == 'negative':
                         self.idle.finished('negative', now)
         blocked = (not self.autonomous or self.dragging or self.menu_active or self.canvas.sleeping or
-                   self.active_motion_kind is not None or self.canvas.motion_cleanup_active() or
+                   self.feeding_active or self.active_motion_kind is not None or
+                   self.canvas.motion_cleanup_active() or
                    self.detector.active or
                    self.reaction_level > 0 or self.idle_expression is not None or
                    self.pointer_over_interactive_area() or
@@ -1112,6 +1223,8 @@ class PetWindow(QWidget):
             for pid, target in self.reaction_values.items():
                 base = c.model.GetParameterValue(c.params[pid]['index']) if pid in c.values or pid in c.expression_params else c.params[pid]['default']
                 c.set_param(pid, base * (1 - blend) + target * blend)
+        if self.feeding_active and self.feeding_mouth_pid in c.params:
+            c.set_param(self.feeding_mouth_pid, self.feeding_mouth_value)
 
     def state_changed(self):
         self.interrupt()
@@ -1149,6 +1262,141 @@ class PetWindow(QWidget):
         self.pending_character_height = None
         self.resize_character(height)
 
+
+    def feeding_supported(self):
+        feeding = self.profile.get('feeding')
+        mouth = self.model_profile.parameter_id('mouth_open')
+        return bool(
+            self.canvas.model and isinstance(feeding, dict) and
+            mouth in self.canvas.params and self.food_overlay is not None and
+            self.project_model_point(feeding.get('mouth_target_model')) is not None)
+
+    def feeding_enabled(self):
+        return bool(
+            self.feeding_supported() and not self.canvas.sleeping and
+            not self.feeding_active and not self.feeding_pending and
+            self.active_motion_kind is None and
+            not self.canvas.motion_cleanup_active() and
+            not self.persistent_negative_active() and
+            self.reaction_expression is None and self.reaction_level == 0)
+
+    def request_feeding(self):
+        self.feeding_pending = True
+        QTimer.singleShot(0, self.dispatch_pending_feeding)
+
+    def dispatch_pending_feeding(self):
+        if self.menu_active or not self.feeding_pending:
+            return False
+        self.feeding_pending = False
+        return self.start_feeding()
+
+    def set_feeding_expression(self, role):
+        asset = self.feeding_reactions.get(role)
+        if asset:
+            self.canvas.select_expression(asset)
+
+    def start_feeding(self, now=None):
+        if not self.feeding_enabled() or self.menu_active:
+            return False
+        now = time.monotonic() if now is None else now
+        feeding = self.profile['feeding']
+        target = self.project_model_point(feeding['mouth_target_model'])
+        if target is None:
+            return False
+        if self.idle_kind == 'ambient':
+            self.cancel_idle_reaction()
+        mouth = self.model_profile.parameter_id('mouth_open')
+        self.feeding_previous_expression = self.canvas.expression
+        self.feeding_mouth_pid = mouth
+        self.feeding_mouth_baseline = self.canvas.model.GetParameterValue(
+            self.canvas.params[mouth]['index'])
+        self.feeding_mouth_value = self.feeding_mouth_baseline
+        self.feeding_started = now
+        self.feeding_stage = 'approach'
+        self.feeding_active = True
+        size = max(1, round(
+            self.character_height * feeding['food_size_character_fraction']))
+        offset = feeding['start_offset_character_fraction']
+        start = target + QPointF(
+            self.character_height * offset[0], self.character_height * offset[1])
+        try:
+            self.food_overlay.configure(start, target, size)
+            self.refresh_feeding_input_region()
+            self.set_feeding_expression('anticipation')
+        except Exception as error:
+            print(f'FEEDING start failed: {error}', flush=True)
+            self.cancel_feeding(now=now)
+            return False
+        self.idle.interact(now)
+        self.cancel_relocation(now)
+        self.detector.reset()
+        print(f'FEEDING started target=({target.x():.1f},{target.y():.1f}) '
+              f'baseline={self.feeding_mouth_baseline:.3f}', flush=True)
+        return True
+
+    def update_feeding(self, now):
+        if not self.feeding_active:
+            return
+        feeding = self.profile['feeding']
+        approach = feeding['approach_seconds']
+        close = feeding['close_seconds']
+        satisfaction = feeding['satisfaction_seconds']
+        elapsed = max(0.0, now - self.feeding_started)
+        open_value = feeding['mouth_open_value']
+        if elapsed < approach:
+            progress = elapsed / approach
+            blend = smooth(progress)
+            self.feeding_mouth_value = (
+                self.feeding_mouth_baseline * (1.0 - blend) + open_value * blend)
+            self.food_overlay.set_progress(progress)
+            return
+        if self.feeding_stage == 'approach':
+            self.feeding_stage = 'eating'
+            self.food_overlay.hide_food()
+            self.refresh_feeding_input_region()
+            self.set_feeding_expression('eating')
+        if elapsed < approach + close:
+            blend = smooth((elapsed - approach) / close)
+            self.feeding_mouth_value = (
+                open_value * (1.0 - blend) + self.feeding_mouth_baseline * blend)
+            return
+        self.feeding_mouth_value = self.feeding_mouth_baseline
+        if self.feeding_stage != 'satisfaction':
+            self.feeding_stage = 'satisfaction'
+            self.set_feeding_expression('satisfaction')
+        if elapsed >= approach + close + satisfaction:
+            self.cancel_feeding(now=now)
+
+    def cancel_feeding(self, restore_expression=True, now=None):
+        if not self.feeding_active and not self.feeding_pending:
+            return False
+        self.feeding_pending = False
+        was_active = self.feeding_active
+        previous = self.feeding_previous_expression
+        mouth = self.feeding_mouth_pid
+        baseline = self.feeding_mouth_baseline
+        self.feeding_active = False
+        self.feeding_started = 0.0
+        self.feeding_stage = None
+        if self.food_overlay is not None:
+            self.food_overlay.hide_food()
+        if was_active and self.canvas.model and mouth in self.canvas.params:
+            self.canvas.set_param(mouth, baseline)
+        if (was_active and restore_expression and self.canvas.model and
+                not self.canvas.sleeping):
+            self.canvas.select_expression(previous)
+        self.feeding_mouth_pid = None
+        self.feeding_mouth_baseline = 0.0
+        self.feeding_mouth_value = 0.0
+        self.feeding_previous_expression = None
+        self.refresh_feeding_input_region()
+        now = time.monotonic() if now is None else now
+        self.idle.interact(now)
+        self.relocator.pause(now)
+        if was_active:
+            print('FEEDING stopped', flush=True)
+        return was_active
+
     def persistent_negative_active(self):
         if self.idle_kind == 'negative':
             return True
@@ -1167,7 +1415,8 @@ class PetWindow(QWidget):
     def greeting_enabled(self):
         return bool(
             self.greeting_supported() and not self.canvas.sleeping and
-            self.active_motion_kind is None and
+            self.active_motion_kind is None and not self.feeding_active and
+            not self.feeding_pending and
             not self.canvas.motion_cleanup_active() and
             not self.persistent_negative_active())
 
@@ -1252,6 +1501,10 @@ class PetWindow(QWidget):
         sleep.setEnabled(self.canvas.model is not None and
                          self.model_profile.motion_asset('sleep') in self.canvas.motion_indexes)
         sleep.triggered.connect(self.canvas.wake if self.canvas.sleeping else self.canvas.sleep)
+        feeding = menu.addAction('간식 주기')
+        feeding.setEnabled(self.feeding_enabled())
+        feeding.triggered.connect(self.request_feeding)
+        menu._feeding_action = feeding
         greeting = menu.addAction('인사하기')
         greeting.setEnabled(self.greeting_enabled())
         greeting.triggered.connect(self.request_greeting)
@@ -1315,6 +1568,8 @@ class PetWindow(QWidget):
             menu.deleteLater()
             if self.greeting_pending:
                 QTimer.singleShot(0, self.dispatch_pending_greeting)
+            if self.feeding_pending:
+                QTimer.singleShot(0, self.dispatch_pending_feeding)
 
     def create_tray(self):
         pixmap = QPixmap(32, 32)
@@ -1368,11 +1623,22 @@ class PetWindow(QWidget):
     def nativeEvent(self, event_type, message):
         if event_type == b'windows_generic_MSG':
             msg = wintypes.MSG.from_address(int(message))
+            if msg.message == 0x84 and self.feeding_active and self.food_overlay is not None:
+                # The temporary mask exposes the cookie path for painting. Cookie-only
+                # pixels remain click-through while character pixels keep normal input.
+                x = ctypes.c_short(msg.lParam & 0xffff).value
+                y = ctypes.c_short((msg.lParam >> 16) & 0xffff).value
+                local = self.mapFromGlobal(QPoint(x, y))
+                canvas_point = local - self._content_offset
+                if (self.food_overlay.path_rect.contains(canvas_point) and
+                        not self._character_input_region.contains(local)):
+                    return True, -1  # HTTRANSPARENT
             if msg.message == 0x21:  # WM_MOUSEACTIVATE: preserve the other app's keyboard focus.
                 return True, 3  # MA_NOACTIVATE, mouse event still delivered.
         return super().nativeEvent(event_type, message)
 
     def closeEvent(self, event):
+        self.cancel_feeding(restore_expression=False)
         self.closed = True
         self.mask_timer.stop()
         self.save_timer.stop()

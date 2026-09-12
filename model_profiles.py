@@ -151,6 +151,9 @@ class ModelProfile:
                 raise ProfileError(
                     f'{self.path.name}.behavior.idle.negative.hold_seconds needs two positive numbers')
         _require(self.behavior, 'petting', dict, f'{self.path.name}.behavior')
+        feeding = self.behavior.get('feeding')
+        if feeding is not None:
+            self._validate_feeding(feeding)
         poke = self.behavior.get('poke')
         if poke is not None:
             if not isinstance(poke, dict):
@@ -224,6 +227,50 @@ class ModelProfile:
                         f'{self.path.name}.behavior.poke completion parameter_values '
                         'must use known semantic parameters')
 
+
+    def _validate_feeding(self, feeding):
+        context = f'{self.path.name}.behavior.feeding'
+        if not isinstance(feeding, dict):
+            raise ProfileError(f'{context} must be an object')
+        if self.parameter_id('mouth_open') is None:
+            raise ProfileError(f'{context} requires the mouth_open semantic parameter')
+        relative = feeding.get('food_asset')
+        if not isinstance(relative, str):
+            raise ProfileError(f'{context}.food_asset must be text')
+        asset_path = (self.root / relative).resolve()
+        if not asset_path.is_relative_to(self.root) or not asset_path.is_file():
+            raise ProfileError(f'{context}.food_asset must be an existing project asset')
+        target = feeding.get('mouth_target_model')
+        if (not isinstance(target, list) or len(target) != 2 or
+                not all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                        for value in target)):
+            raise ProfileError(f'{context}.mouth_target_model needs two numbers')
+        offset = feeding.get('start_offset_character_fraction')
+        if (not isinstance(offset, list) or len(offset) != 2 or
+                not all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                        for value in offset)):
+            raise ProfileError(
+                f'{context}.start_offset_character_fraction needs two numbers')
+        for key in ('food_size_character_fraction', 'approach_seconds',
+                    'close_seconds', 'satisfaction_seconds'):
+            value = feeding.get(key)
+            if (not isinstance(value, (int, float)) or isinstance(value, bool) or
+                    value <= 0):
+                raise ProfileError(f'{context}.{key} must be positive')
+        mouth = feeding.get('mouth_open_value')
+        if not isinstance(mouth, (int, float)) or isinstance(mouth, bool):
+            raise ProfileError(f'{context}.mouth_open_value must be numeric')
+        reactions = feeding.get('reactions', {})
+        if not isinstance(reactions, dict):
+            raise ProfileError(f'{context}.reactions must be an object')
+        allowed = {'anticipation', 'eating', 'satisfaction'}
+        for role, reaction in reactions.items():
+            if role not in allowed or not isinstance(reaction, dict):
+                raise ProfileError(f'{context}.reactions contains an invalid role')
+            if reaction.get('asset') not in self.expressions:
+                raise ProfileError(
+                    f'{context}.reactions.{role} references an unknown expression asset')
+
     def parameter_id(self, semantic):
         return self.parameter_ids.get(semantic)
 
@@ -246,6 +293,12 @@ class ModelProfile:
             else:
                 missing.append(semantic)
         return resolved, missing
+
+    def feeding_food_path(self):
+        feeding = self.behavior.get('feeding')
+        if not isinstance(feeding, dict):
+            return None
+        return (self.root / feeding['food_asset']).resolve()
 
     def expression_index(self, asset):
         for index, item in enumerate(self.assets.get('expressions', [])):
