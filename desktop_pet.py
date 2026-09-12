@@ -1519,8 +1519,13 @@ class PetWindow(QWidget):
             return
         self.registry.set_active(profile_id)
         self.save_state()
-        result = QProcess.startDetached(
-            sys.executable, [str(ROOT / 'app.py'), '--profile', profile_id])
+        if getattr(sys, 'frozen', False):
+            program = sys.executable
+            arguments = ['--profile', profile_id]
+        else:
+            program = sys.executable
+            arguments = [str(ROOT / 'app.py'), '--profile', profile_id]
+        result = QProcess.startDetached(program, arguments)
         started = result[0] if isinstance(result, tuple) else bool(result)
         if started:
             self.close()

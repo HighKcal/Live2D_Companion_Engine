@@ -1,8 +1,10 @@
 """Windows Live2D prototype: native Cubism rendering in a QOpenGLWidget."""
 import argparse
 import gc
+import io
 import json
 import math
+import os
 from pathlib import Path
 import sys
 import time
@@ -18,6 +20,29 @@ from OpenGL.GL import glGetString, GL_VERSION, GL_RENDERER, glViewport
 import live2d.v3 as live2d
 from prepare_model import ROOT, prepare
 from model_profiles import ProfileError, ProfileRegistry
+
+
+_LOG_STREAM = None
+
+
+def configure_windowed_streams():
+    """Give windowed/frozen launches a safe diagnostic stream when possible."""
+    global _LOG_STREAM
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    try:
+        (ROOT / 'local').mkdir(parents=True, exist_ok=True)
+        _LOG_STREAM = (ROOT / 'local' / 'pet.log').open(
+            'w', encoding='utf-8', buffering=1)
+    except OSError:
+        try:
+            _LOG_STREAM = open(os.devnull, 'w', encoding='utf-8')
+        except OSError:
+            _LOG_STREAM = io.StringIO()
+    if sys.stdout is None:
+        sys.stdout = _LOG_STREAM
+    if sys.stderr is None:
+        sys.stderr = _LOG_STREAM
 
 
 class Canvas(QOpenGLWidget):
@@ -391,10 +416,7 @@ class Window(QMainWindow):
 
 def main():
     # pythonw has no console streams; retain diagnostics without a console window.
-    if sys.stdout is None or sys.stderr is None:
-        (ROOT / 'local').mkdir(exist_ok=True)
-        log = (ROOT / 'local' / 'pet.log').open('w', encoding='utf-8', buffering=1)
-        sys.stdout = sys.stderr = log
+    configure_windowed_streams()
     parser = argparse.ArgumentParser()
     parser.add_argument('--zip', type=Path)
     parser.add_argument('--model', type=Path)

@@ -8,7 +8,8 @@ import zipfile
 
 from PIL import Image
 
-ROOT = Path(__file__).resolve().parent
+from app_paths import ROOT
+
 MAX_RUNTIME_TEXTURE_SIZE = 4096
 
 
