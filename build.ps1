@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [switch]$IncludeModels
+)
 
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -23,7 +25,7 @@ try {
     & $Python -m PyInstaller --noconfirm --clean $Spec
     if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed.' }
 
-    foreach ($Directory in @('profiles', 'assets', 'models')) {
+    foreach ($Directory in @('profiles', 'assets')) {
         $Source = Join-Path $ProjectRoot $Directory
         if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
             throw "Required runtime directory is missing: $Source"
@@ -31,14 +33,20 @@ try {
         Copy-Item -LiteralPath $Source -Destination $DistRoot -Recurse -Force
     }
 
+    $DistModels = Join-Path $DistRoot 'models'
+    if ($IncludeModels) {
+        $SourceModels = Join-Path $ProjectRoot 'models'
+        if (-not (Test-Path -LiteralPath $SourceModels -PathType Container)) {
+            throw "-IncludeModels was requested, but the local models directory is missing: $SourceModels"
+        }
+        Copy-Item -LiteralPath $SourceModels -Destination $DistRoot -Recurse -Force
+    }
+    else {
+        New-Item -ItemType Directory -Path $DistModels -Force | Out-Null
+    }
+
     $DistLocal = Join-Path $DistRoot 'local'
     New-Item -ItemType Directory -Path $DistLocal -Force | Out-Null
-    foreach ($StateFile in @('app-state.json', 'pet-state.json')) {
-        $SourceState = Join-Path $ProjectRoot "local\$StateFile"
-        if (Test-Path -LiteralPath $SourceState -PathType Leaf) {
-            Copy-Item -LiteralPath $SourceState -Destination $DistLocal -Force
-        }
-    }
 
     $RequiredFiles = @(
         'Live2D Companion Engine.exe',
@@ -70,7 +78,23 @@ try {
         Write-Host 'Installed Qt has no separate qpng.dll; PNG support is built into QtGui.'
     }
 
+    if (-not $IncludeModels) {
+        $BundledModels = @(Get-ChildItem -LiteralPath $DistModels -Recurse -File)
+        if ($BundledModels.Count -ne 0) {
+            throw 'Public build unexpectedly contains files in models\.'
+        }
+    }
+    $BundledLocalState = @(Get-ChildItem -LiteralPath $DistLocal -Recurse -File)
+    if ($BundledLocalState.Count -ne 0) {
+        throw 'Build unexpectedly contains developer files in local\.'
+    }
+
+    $BuildKind = if ($IncludeModels) { 'local developer build (models included)' } else { 'engine-only public build (models excluded)' }
     Write-Host "Build complete: $DistRoot"
+    Write-Host "Build mode: $BuildKind"
+    if (-not $IncludeModels) {
+        Write-Warning 'This engine-only build requires the user to add licensed Live2D model files before the app can launch.'
+    }
 }
 finally {
     Pop-Location

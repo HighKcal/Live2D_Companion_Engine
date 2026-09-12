@@ -3,3 +3,5 @@ artifacts/** export-ignore
 research/** export-ignore
 .venv/** export-ignore
 local/** export-ignore
+build/** export-ignore
+dist/** export-ignore

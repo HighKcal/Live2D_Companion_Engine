@@ -4,7 +4,7 @@ An experimental Windows desktop companion engine that lets Live2D characters liv
 
 Rather than treating Live2D models merely as static assets inside a viewer or transparent overlay, this project explores turning them into interactive desktop companions. The goal is to give characters a believable, responsive presence on your screen—moving autonomously, reacting to direct user input, expressing shifting emotions, and sustaining a stateful relationship with the desktop environment.
 
-This is an active personal project focused on interaction mechanics, behavior design, and engine architecture.
+This is a Windows Live2D desktop companion engine focused on interaction mechanics, behavior design, and a profile-driven architecture. Version 1.0 supports both source execution and a standalone PyInstaller `onedir` application.
 
 ---
 
@@ -22,6 +22,11 @@ The engine currently implements an interactive runtime loop designed specificall
 - **State Persistence Across Launches**: Automatically saves window position, configured size, and active character choice, restoring them seamlessly on restart.
 - **Flexible Sizing & Movement Bounds**: Supports a wide scaling range with cached silhouette bounds, allowing characters to sit comfortably along screen edges without artificial boundary clipping.
 - **Multi-Model Support via Profiles**: Seamlessly switches between different Live2D characters through a right-click context menu or CLI parameters.
+- **Profile-Driven Greetings**: Plays an explicit character greeting motion from the context menu when the selected profile provides one.
+- **Escalating Poke Reactions**: Recognizes short clicks in profile-defined interaction regions and progresses through character-specific annoyance reactions.
+- **Cookie Feeding Interaction**: Animates the included public cookie asset toward the character and coordinates mouth and expression reactions when supported by the profile.
+- **Manual Sleep & Wake Controls**: Starts or stops sleep from the context menu, with graceful fallback for models without a sleep motion.
+- **Runtime Character Switching & Sizing**: Switches profiles and adjusts character height from the context menu while preserving the portable runtime layout.
 
 *(Note: Advanced capabilities such as LLM-driven dialogue, voice synthesis, minigames, and desktop inventory are future concepts and not part of the current build.)*
 
@@ -111,10 +116,9 @@ AI agents are treated as development tools within an iterative, human-directed w
    ```
 2. Create and activate a virtual environment, then install dependencies:
    ```powershell
-   python -m venv .venv
-   .\.venv\Scripts\activate
-   pip install -r requirements.txt
+   .\setup.ps1
    ```
+   The setup script accepts any 64-bit Python 3.12 patch release. Use `-Python` to provide a specific Python 3.12 executable when `python` is not the desired command.
 3. Prepare a compatible Live2D model (see [Model Assets](#model-assets--disclaimer) below) or inspect existing profile definitions in `profiles/`.
 
 ### Running the Companion
@@ -131,9 +135,38 @@ python -X utf8 app.py --lab
 
 ---
 
+## Building the Standalone App
+
+Create the public-safe PyInstaller `onedir` build from an initialized `.venv`:
+
+```powershell
+.\build.ps1
+```
+
+The output is written to `dist\Live2D Companion Engine`. The default output is an **engine-only public build**: it includes the engine, profile JSON files, the public cookie asset, Live2D framework shaders, and required Qt/runtime dependencies. It deliberately creates empty `models\` and `local\` directories, so it does not copy copyrighted model assets or developer state into the distribution.
+
+The engine cannot start a companion until a valid model is installed. Users must place licensed Live2D runtime assets at the path expected by one of the included profiles, or create their own model/profile pairing, before launching the EXE. A model-free frozen launch displays this requirement and records the detailed missing paths in `local\pet.log`. Profile JSON files describe how the engine uses a model; they do not contain the model itself.
+
+For private local testing only, a developer can explicitly copy their ignored local model directory into the build:
+
+```powershell
+.\build.ps1 -IncludeModels
+```
+
+Do not publish that developer build unless you independently have redistribution rights for every included model asset. The repository's `models/` directory is excluded from Git.
+
+---
+
 ## Model Assets & Disclaimer
 
 - **No Model Assets Included**: Live2D character model files (`.moc3`, `.model3.json`, textures, motions, expressions) are **intentionally excluded** from this repository.
 - **User Responsibility**: Users must provide compatible Live2D model assets independently.
 - **Copyright & Licensing**: All character models remain the exclusive intellectual property and copyright of their respective original creators and are governed by their original licenses.
 - **Repository Scope**: This repository distributes only the engine source code, profile schemas, preparation tooling, test harnesses, and technical documentation.
+- **Code License Is Separate**: The root MIT License applies to this project's source code. It does not grant rights to Live2D models or other third-party assets supplied separately by users.
+
+---
+
+## License
+
+The engine source code is available under the [MIT License](LICENSE). Live2D model assets are not included and remain subject to their respective owners' licenses.

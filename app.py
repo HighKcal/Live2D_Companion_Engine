@@ -14,8 +14,8 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QSurfaceFormat
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox,
-    QFormLayout, QHBoxLayout, QLabel, QMainWindow, QPushButton, QScrollArea,
-    QSlider, QVBoxLayout, QWidget)
+    QFormLayout, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
+    QScrollArea, QSlider, QVBoxLayout, QWidget)
 from OpenGL.GL import glGetString, GL_VERSION, GL_RENDERER, glViewport
 import live2d.v3 as live2d
 from prepare_model import ROOT, prepare
@@ -438,6 +438,18 @@ def main():
         if args.profile:
             registry.set_active(profile.id)
     except ProfileError as error:
+        print(f'STARTUP_ERROR {error}', flush=True)
+        if getattr(sys, 'frozen', False) and not (args.verify or args.verify_pet):
+            error_app = QApplication.instance() or QApplication(sys.argv[:1])
+            QMessageBox.critical(
+                None,
+                'Live2D Companion Engine - Model Required',
+                'No compatible Live2D model is installed.\n\n'
+                'This public build contains the engine and profiles, but no model assets. '
+                'Add your licensed model runtime files under the models folder as described '
+                'in README.md, then launch again.\n\n'
+                f'Details: {error}')
+            return 2
         parser.error(str(error))
     fmt = QSurfaceFormat()
     fmt.setVersion(2, 1)
